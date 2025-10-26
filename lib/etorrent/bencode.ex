@@ -44,13 +44,6 @@ defimpl Etorrent.Bencode.Encode, for: List do
     encoded_vs =
       Enum.map(l, fn v -> Etorrent.Bencode.Encode.encode(v) end)
 
-    # unclear if this is necesssary, it isn't in the spec,
-    # but does provide a stable ordering for roundtripping,
-    # since dictionaries are ordered by their keys
-    # |> Enum.sort_by(fn v -> String.length(v) end)
-    # |> Enum.join("")
-
-    # "l#{encoded_vs}e"
     [?l, encoded_vs, ?e]
   end
 end
