@@ -1,0 +1,22 @@
+# todo
+
+- [ ] peer download
+- [ ] peer upload
+- [ ] peer start (receive handshake first path, probably by {:receive_handshake} on start_child or similar)
+- [ ] peer state (send handshake first path, probably by {:send_handshake} on start_child or similar)
+- [ ] torrent define on-disk schema
+- [ ] torrent load previous state from disk
+- [ ] torrent save current state to disk
+- [ ] torrent announce to tracker
+- [ ] torrent figure out in-memory peer data schema
+- [ ] centralize info_hash calculation
+- [ ] define config schema
+- [ ] save config to disk
+- [ ] ui to view and change config
+- [ ] ui to view torrents overview
+- [ ] ui to view torrent detail
+- [ ] make listener port configurable
+- [x] listener listen
+- [x] acceptor pool
+- [x] acceptor hand off to peer_worker
+- [ ] auth

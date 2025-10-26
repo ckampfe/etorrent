@@ -1,0 +1,30 @@
+<Layouts.flash_group flash={@flash} />
+
+<div>
+  <form
+    hx-post={~p"/torrents/create"}
+    hx-swap="none"
+    enctype="multipart/form-data"
+    hx-on::after-request="if(event.detail.successful) this.reset()"
+  >
+    <div>
+      <fieldset class="fieldset">
+        <label class="label" for="torrent_files">Add torrents (.torrent files)</label>
+        <input
+          id="torrent_files"
+          name="torrent_files[]"
+          class="file-input"
+          type="file"
+          accept=".torrent"
+          multiple
+          required
+        />
+      </fieldset>
+    </div>
+    <div>
+      <button class="btn">Submit</button>
+    </div>
+  </form>
+
+  <.torrents_table torrents={@torrents} />
+</div>
