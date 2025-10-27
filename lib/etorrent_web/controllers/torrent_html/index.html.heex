@@ -1,19 +1,45 @@
 <Layouts.flash_group flash={@flash} />
 
 <div>
-  <.form :let={f} for={@torrent_changeset} action={~p"/torrents/create"} multipart>
-    <div>
-      <fieldset class="fieldset">
-        <label class="label" for="torrent_files">Add torrents (.torrent files)</label>
-        <.input field={f[:torrent_file]} type="file" accept=".torrent" required />
-        <label class="label" for="data_path">Data path</label>
-        <.input field={f[:data_path]} type="text" placeholder="/Users/your/directory" />
-      </fieldset>
+  <%= if @add_torrent do %>
+    <div class="md:grid md:grid-cols-3">
+      <div class="m-4"></div>
+
+      <div class="p-4 col-span-2">
+        <a href="/" class="link flex justify-end">Hide</a>
+        <.form :let={f} for={@torrent_changeset} action={~p"/torrents/create"} multipart>
+          <div class="md:grid md:grid-cols-5">
+            <div class="col-span-2 p-2 w-full">
+              <label class="label" for="torrent_files">Add torrents (.torrent files)</label>
+              <.input
+                field={f[:torrent_file]}
+                type="file"
+                accept=".torrent"
+                class="file-input w-full"
+                required
+              />
+            </div>
+            <div class="col-span-2 p-2">
+              <label class="label" for="data_path">Data path</label>
+              <.input
+                field={f[:data_path]}
+                type="text"
+                class="input w-full"
+                placeholder="/Users/your/directory"
+              />
+            </div>
+            <div class="col-span-1 p-2">
+              <button class="btn w-full h-full">Submit</button>
+            </div>
+          </div>
+        </.form>
+      </div>
     </div>
-    <div>
-      <button class="btn">Submit</button>
+  <% else %>
+    <div class="p-4">
+      <a href="/?add_torrent=true" class="link flex justify-end">Add torrent</a>
     </div>
-  </.form>
+  <% end %>
 
   <.torrents_table torrents={@torrents} />
 </div>

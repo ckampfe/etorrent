@@ -1,7 +1,18 @@
 <div>
   <header class="m-4">
-    <div>
-      {@torrent[:name]}
+    <div class="breadcrumbs">
+      <ul>
+        <li>
+          <a href="/" class="link">
+            Torrents
+          </a>
+        </li>
+        <li>
+          <a href="" class="link">
+            {@torrent[:name]}
+          </a>
+        </li>
+      </ul>
     </div>
 
     <div>
@@ -11,13 +22,31 @@
     <div>Have: {Enum.filter(@torrent[:pieces], fn piece -> piece end) |> Enum.count()}</div>
     <div>Want: {Enum.filter(@torrent[:pieces], fn piece -> !piece end) |> Enum.count()}</div>
   </header>
-  <main>
-    <div class="grid grid-cols-10 max-w-md m-4 border-1 border-solid">
+
+  <main class="md:grid md:grid-cols-2">
+    <div class="grid grid-cols-10 max-w-md m-4 border-1 border-solid row-auto">
       <div
         :for={value <- @torrent[:pieces]}
         class={"#{if value, do: "bg-blue-200", else: ""} aspect-square border-1 border-solid"}
       >
       </div>
+    </div>
+    <div>
+      Peers (TODO placeholder)
+      <table class="table">
+        <thead>
+          <tr>
+            <td>ip</td>
+            <td>client</td>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={i <- 0..9}>
+            <td>{"192.168.1.10#{i}"}</td>
+            <td>Transmission 4.11</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </main>
 </div>

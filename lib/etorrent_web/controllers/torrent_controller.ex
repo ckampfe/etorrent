@@ -3,10 +3,16 @@ defmodule EtorrentWeb.TorrentController do
 
   alias Etorrent.Bencode
 
-  def index(conn, _params) do
+  def index(conn, params) do
     torrents = Etorrent.get_all_torrent_metrics()
 
-    render(conn, :index, torrents: torrents, torrent_changeset: Phoenix.Component.to_form(%{}))
+    add_torrent = Map.get(params, "add_torrent", false)
+
+    render(conn, :index,
+      torrents: torrents,
+      torrent_changeset: Phoenix.Component.to_form(%{}),
+      add_torrent: add_torrent
+    )
   end
 
   def create(
