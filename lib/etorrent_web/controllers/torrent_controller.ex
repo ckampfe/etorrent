@@ -29,14 +29,13 @@ defmodule EtorrentWeb.TorrentController do
 
     {:ok, torrent} = Etorrent.get_torrent_metrics(info_hash)
 
-    {cols, rows} = make_square_from_list(length(torrent[:pieces]))
+    side_length = make_square_from_list(length(torrent[:pieces]))
 
     conn
-    |> render(:show, torrent: torrent, cols: cols, rows: rows)
+    |> render(:show, torrent: torrent, side_length: side_length)
   end
 
   def make_square_from_list(i) do
-    base = :math.sqrt(i) |> ceil()
-    {base, base}
+    i |> :math.sqrt() |> ceil()
   end
 end
