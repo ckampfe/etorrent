@@ -5,7 +5,8 @@ defmodule EtorrentWeb.TorrentController do
 
   def index(conn, _params) do
     torrents = Etorrent.get_all_torrent_metrics()
-    render(conn, :index, torrents: torrents)
+
+    render(conn, :index, torrents: torrents, torrent_changeset: Phoenix.Component.to_form(%{}))
   end
 
   def create(conn, %{"torrent_files" => torrent_files} = _params) do
