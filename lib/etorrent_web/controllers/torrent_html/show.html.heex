@@ -12,7 +12,7 @@
     <div>Want: {Enum.filter(@torrent[:pieces], fn piece -> !piece end) |> Enum.count()}</div>
   </header>
   <main>
-    <div class={"grid grid-cols-#{@side_length} max-w-md m-4 border-1 border-solid"}>
+    <div class="grid grid-cols-10 max-w-md m-4 border-1 border-solid">
       <div
         :for={value <- @torrent[:pieces]}
         class={"#{if value, do: "bg-blue-200", else: ""} aspect-square border-1 border-solid"}
