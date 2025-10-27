@@ -36,17 +36,7 @@ defmodule EtorrentWeb.TorrentController do
   end
 
   def make_square_from_list(i) do
-    sqrt_of_i_ceil = :math.sqrt(i) |> floor()
-
-    r = 1..sqrt_of_i_ceil
-
-    Enum.reduce(r, [], fn n, acc ->
-      if rem(i, n) == 0 do
-        [{n, trunc(i / n)} | acc]
-      else
-        acc
-      end
-    end)
-    |> List.first()
+    base = :math.sqrt(i) |> ceil()
+    {base, base}
   end
 end

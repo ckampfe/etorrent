@@ -2,6 +2,15 @@
    https://tailwindcss.com/docs/configuration */
 
 @import "tailwindcss" source(none);
+/* WARNING NOTE:
+This includes all 1000 grid-cols- classes, regardless of whether they are used.
+This is because we dynamically calculate these in the show action,
+and tailscale can't see the things that are dynamically calculated since they
+haven't been rendered yet...so it doesn't include them. Hence this.
+Probably a better way but CSS is not something I anticipate changing often,
+so this will be cached.
+*/
+@source inline("grid-cols-{1..1000}");
 @source "../css";
 @source "../js";
 @source "../../lib/etorrent_web";
@@ -100,6 +109,9 @@
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
 /* Make LiveView wrapper divs transparent for layout */
-[data-phx-session], [data-phx-teleported-src] { display: contents }
+[data-phx-session],
+[data-phx-teleported-src] {
+  display: contents
+}
 
 /* This file is for your main application CSS */
