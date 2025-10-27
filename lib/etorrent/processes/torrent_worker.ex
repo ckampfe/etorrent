@@ -148,7 +148,6 @@ defmodule Etorrent.TorrentWorker do
           Process.send_after(self(), :announce, :timer.minutes(3))
           error
       end
-      |> IO.inspect()
 
     state = Map.put(state, :announce_response, announce_response)
 

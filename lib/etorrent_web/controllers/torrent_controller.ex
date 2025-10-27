@@ -29,7 +29,7 @@ defmodule EtorrentWeb.TorrentController do
 
     {:ok, torrent} = Etorrent.get_torrent_metrics(info_hash)
 
-    {cols, rows} = make_square_from_list(length(torrent[:pieces])) |> IO.inspect()
+    {cols, rows} = make_square_from_list(length(torrent[:pieces]))
 
     conn
     |> render(:show, torrent: torrent, cols: cols, rows: rows)
