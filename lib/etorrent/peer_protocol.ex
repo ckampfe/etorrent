@@ -53,7 +53,7 @@ defmodule Etorrent.PeerProtocol do
         <<19, "BitTorrent protocol", _reserved::binary-size(8), info_hash::binary-size(20),
           peer_id::binary-size(20)>>
       ) do
-    %{info_hash: info_hash, peer_id: peer_id}
+    {:ok, %Handshake{info_hash: info_hash, peer_id: peer_id}}
   end
 
   def encode(m) do

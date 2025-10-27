@@ -10,12 +10,11 @@ defmodule Etorrent do
   import Ecto.Query
   require Logger
 
-  def new_torrent(torrent_file) do
+  def new_torrent(torrent_file, data_path) do
     info_hash = info_hash(torrent_file)
 
-    # TODO
-    data_dir = "/Users/clark/Downloads"
-    data_path = Path.join([data_dir, torrent_file[:info][:name]])
+    # TODO any kind of path validation - but this assumes a trusted machine/user
+    data_path = Path.join([data_path, torrent_file[:info][:name]])
 
     {:ok, encoded_torrent_file} =
       Bencode.encode(torrent_file)
@@ -30,17 +29,18 @@ defmodule Etorrent do
     })
     |> Repo.insert()
 
-    TorrentsSupervisor.start_child(torrent_file)
+    TorrentsSupervisor.start_child(torrent_file, data_path)
   end
 
   def load_all_existing_torrents do
     Torrent
-    |> select([:info_hash, :file])
+    |> select([:info_hash, :file, :data_path])
     |> Repo.all()
+    # TODO parallelize
     |> Enum.each(fn torrent ->
       Logger.debug("Loading torrent #{Base.encode16(torrent.info_hash)}")
       {:ok, decoded_torrent_file} = Bencode.decode(torrent.file, atom_keys: true)
-      TorrentsSupervisor.start_child(decoded_torrent_file)
+      TorrentsSupervisor.start_child(decoded_torrent_file, torrent.data_path)
     end)
   end
 

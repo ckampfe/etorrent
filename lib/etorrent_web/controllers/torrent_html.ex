@@ -34,12 +34,15 @@ defmodule EtorrentWeb.TorrentHTML do
             </a>
           </td>
           <td>{torrent[:size]}</td>
-          <%!-- <td>{torrent[:progress]}</td> --%>
           <td>
             <progress
               class="progress"
-              value="10"
-              max="100"
+              value={
+                torrent[:pieces]
+                |> Enum.filter(fn piece -> piece end)
+                |> Enum.count()
+                |> then(fn haves -> haves / length(torrent[:pieces]) end)
+              }
             >
             </progress>
           </td>

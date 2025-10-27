@@ -33,20 +33,74 @@ defmodule Etorrent.DataFile do
     :file.pwrite(file, position, block)
   end
 
-  def verify_piece(file, index, piece_length, expected_hash) do
-    position = index * piece_length
+  defmodule PieceHashes do
+    defstruct [:piece_hashes, :nominal_piece_length, :last_piece_length]
 
-    {:ok, file_info} = :file.read_file_info(file)
+    def new(%{
+          pieces: pieces,
+          length: data_length,
+          "piece length": nominal_piece_length
+        }) do
+      piece_hashes =
+        for <<hash::binary-20 <- pieces>> do
+          hash
+        end
 
-    real_piece_length =
-      if position + piece_length > file_info.size do
-        file_info.size - position
-      else
-        piece_length
+      delta =
+        length(piece_hashes) * nominal_piece_length - data_length
+
+      last_piece_length =
+        nominal_piece_length - delta
+
+      %__MODULE__{
+        piece_hashes: piece_hashes,
+        nominal_piece_length: nominal_piece_length,
+        last_piece_length: last_piece_length
+      }
+    end
+
+    # TODO parallelize this
+    def verify_pieces(self, file) do
+      len = count(self)
+
+      Enum.reduce(0..(len - 1), [], fn i, acc ->
+        [verify_piece(self, i, file) | acc]
+      end)
+      |> Enum.reverse()
+    end
+
+    def verify_piece(self, i, file) do
+      position = piece_position(self, i)
+
+      %{hash: expected_hash, length: length} = get_piece_hash_and_length(self, i)
+
+      with {:ok, piece_on_disk} <- :file.pread(file, position, length) do
+        :crypto.hash(:sha, piece_on_disk) == expected_hash
       end
+    end
 
-    with {:ok, piece} <- :file.pread(file, position, real_piece_length) do
-      :crypto.hash(:sha, piece) == expected_hash
+    def piece_position(%__MODULE__{} = self, i) do
+      i * self.nominal_piece_length
+    end
+
+    def count(%__MODULE__{piece_hashes: piece_hashes}) do
+      Kernel.length(piece_hashes)
+    end
+
+    def get_piece_hash_and_length(%__MODULE__{} = self, i) do
+      hash = Enum.at(self.piece_hashes, i)
+
+      length =
+        if i == length(self.piece_hashes) - 1 do
+          self.last_piece_length
+        else
+          self.nominal_piece_length
+        end
+
+      %{
+        hash: hash,
+        length: length
+      }
     end
   end
 end

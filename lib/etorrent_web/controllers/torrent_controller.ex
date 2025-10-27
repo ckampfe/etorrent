@@ -9,20 +9,19 @@ defmodule EtorrentWeb.TorrentController do
     render(conn, :index, torrents: torrents, torrent_changeset: Phoenix.Component.to_form(%{}))
   end
 
-  def create(conn, %{"torrent_files" => torrent_files} = _params) do
-    Enum.each(torrent_files, fn file ->
-      f = File.read!(file.path)
+  def create(
+        conn,
+        %{"torrent_file" => torrent_file, "data_path" => dangerous_data_path} = _params
+      ) do
+    f = File.read!(torrent_file.path)
 
-      {:ok, torrent_file} =
-        Bencode.decode(f, atom_keys: true)
+    {:ok, decoded_torrent_file} =
+      Bencode.decode(f, atom_keys: true)
 
-      Etorrent.new_torrent(torrent_file)
-    end)
-
-    torrents = Etorrent.get_all_torrent_metrics()
+    Etorrent.new_torrent(decoded_torrent_file, dangerous_data_path)
 
     conn
-    |> render(:created, torrents: torrents)
+    |> redirect(to: ~p"/")
   end
 
   def show(conn, %{"info_hash" => info_hash_hex} = _params) do
@@ -30,7 +29,24 @@ defmodule EtorrentWeb.TorrentController do
 
     {:ok, torrent} = Etorrent.get_torrent_metrics(info_hash)
 
+    {cols, rows} = make_square_from_list(length(torrent[:pieces])) |> IO.inspect()
+
     conn
-    |> render(:show, torrent: torrent)
+    |> render(:show, torrent: torrent, cols: cols, rows: rows)
+  end
+
+  def make_square_from_list(i) do
+    sqrt_of_i_ceil = :math.sqrt(i) |> floor()
+
+    r = 1..sqrt_of_i_ceil
+
+    Enum.reduce(r, [], fn n, acc ->
+      if rem(i, n) == 0 do
+        [{n, trunc(i / n)} | acc]
+      else
+        acc
+      end
+    end)
+    |> List.first()
   end
 end

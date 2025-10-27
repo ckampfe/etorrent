@@ -14,11 +14,11 @@
 defmodule Etorrent.TorrentWorker do
   use GenServer
   require Logger
-  alias Etorrent.{Tracker, PeerWorker}
+  alias Etorrent.{Tracker, PeerWorker, DataFile}
 
-  def start_link(torrent_file) do
+  def start_link([torrent_file, _data_path] = args) do
     info_hash = Etorrent.info_hash(torrent_file)
-    GenServer.start_link(__MODULE__, torrent_file, name: name(info_hash))
+    GenServer.start_link(__MODULE__, args, name: name(info_hash))
   end
 
   def all_info_hashes do
@@ -33,7 +33,7 @@ defmodule Etorrent.TorrentWorker do
     GenServer.call(name(info_hash), {:register_new_peer, peer_pid, peer_id})
   end
 
-  def init(torrent_file) do
+  def init([torrent_file, data_path]) do
     peer_id_base = "-ET0001-"
 
     peer_id =
@@ -43,6 +43,7 @@ defmodule Etorrent.TorrentWorker do
 
     state = %{
       torrent_file: torrent_file,
+      data_path: data_path,
       info_hash: Etorrent.info_hash(torrent_file),
       state: :active,
       peers: %{},
@@ -70,6 +71,19 @@ defmodule Etorrent.TorrentWorker do
     #   else
     #     Repo.insert(%Torrent{info_hash: state[:info_hash]})
     #   end
+
+    # piece_hashes_and_lengths = calculate_piece_lengths(state[:torrent_file][:info])
+
+    {:ok, data_file} = :file.open(state[:data_path], [:read, :raw, :binary])
+
+    piece_hashes_and_lengths = DataFile.PieceHashes.new(state[:torrent_file][:info])
+
+    pieces_statuses = DataFile.PieceHashes.verify_pieces(piece_hashes_and_lengths, data_file)
+
+    state =
+      state
+      |> Map.put(:piece_hashes_and_lengths, piece_hashes_and_lengths)
+      |> Map.put(:pieces_statuses, pieces_statuses)
 
     send(self(), :announce)
     send(self(), :tick)
@@ -101,7 +115,8 @@ defmodule Etorrent.TorrentWorker do
         download: 0,
         upload: 0,
         peers: state[:peers],
-        ratio: 0.0
+        ratio: 0.0,
+        pieces: state[:pieces_statuses]
       }}, state}
   end
 

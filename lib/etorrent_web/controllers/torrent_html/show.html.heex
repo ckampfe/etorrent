@@ -1,3 +1,23 @@
 <div>
-  {@torrent[:name]}
+  <header class="m-4">
+    <div>
+      {@torrent[:name]}
+    </div>
+
+    <div>
+      {length(@torrent[:pieces])} pieces
+    </div>
+
+    <div>Have: {Enum.filter(@torrent[:pieces], fn piece -> piece end) |> Enum.count()}</div>
+    <div>Want: {Enum.filter(@torrent[:pieces], fn piece -> !piece end) |> Enum.count()}</div>
+  </header>
+  <main>
+    <div class={"grid grid-cols-#{@cols} aspect-square max-w-md m-4 border-1 border-solid"}>
+      <div
+        :for={value <- @torrent[:pieces]}
+        class={"#{if value, do: "bg-blue-200", else: ""} aspect-square border-1 border-solid"}
+      >
+      </div>
+    </div>
+  </main>
 </div>
