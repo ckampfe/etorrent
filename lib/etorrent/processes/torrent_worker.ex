@@ -41,10 +41,12 @@ defmodule Etorrent.TorrentWorker do
         acc <> to_string(:rand.uniform(10) - 1)
       end)
 
+    info_hash = Etorrent.info_hash(torrent_file)
+
     state = %{
       torrent_file: torrent_file,
       data_path: data_path,
-      info_hash: Etorrent.info_hash(torrent_file),
+      info_hash: info_hash,
       state: :active,
       peers: %{},
       peer_id: peer_id,
@@ -52,6 +54,11 @@ defmodule Etorrent.TorrentWorker do
       pieces_have: [],
       pieces_want: []
     }
+
+    Logger.metadata(
+      info_hash: Base.encode16(info_hash) |> String.slice(0..5),
+      name: torrent_file[:info][:name]
+    )
 
     {:ok, state, {:continue, :setup}}
   end
@@ -121,9 +128,7 @@ defmodule Etorrent.TorrentWorker do
   end
 
   def handle_info(:announce, state) do
-    Logger.debug(
-      "torrent #{Base.encode16(state[:info_hash])} announcing to #{inspect(state[:torrent_file][:announce])}"
-    )
+    Logger.debug("announcing to #{inspect(state[:torrent_file][:announce])}")
 
     # TODO FIX: for some reason announce is only returning this same peer. why?
     announce_response =
