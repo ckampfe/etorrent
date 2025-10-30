@@ -1,7 +1,7 @@
 defmodule Etorrent.PeerWorker do
   use GenServer, restart: :temporary
   require Logger
-  alias Etorrent.PeerProtocol
+  alias Etorrent.{PeerProtocol, TorrentWorker, DataFile}
 
   def start_link_incoming_connection(args) do
     GenServer.start_link(__MODULE__, {:incoming, args})
@@ -28,8 +28,6 @@ defmodule Etorrent.PeerWorker do
 
   def init({mode, args}) do
     state = %{
-      tcp_module: Application.fetch_env!(:etorrent, __MODULE__)[:tcp_module],
-      inet_module: Application.fetch_env!(:etorrent, __MODULE__)[:inet_module],
       am_choking: true,
       am_interested: false,
       peer_choking: true,
@@ -47,24 +45,31 @@ defmodule Etorrent.PeerWorker do
     end
   end
 
-  def give_peer_id(server, peer_id) do
-    GenServer.call(server, {:give_peer_id, peer_id})
+  def give_peer_id(server, peer_id, data_path) do
+    GenServer.call(server, {:give_peer_id, peer_id, data_path})
   end
 
-  def handle_call({:give_peer_id, peer_id}, _from, state) do
-    state = Map.put(state, :peer_id, peer_id)
+  def handle_call({:give_peer_id, peer_id, data_path}, _from, %{data_path: data_path} = state) do
+    {:ok, f} = DataFile.open_or_create(data_path)
+
+    state =
+      state
+      |> Map.put(:peer_id, peer_id)
+      |> Map.put(:data_path, data_path)
+      |> Map.put(:data_file, f)
+
     {:reply, :ok, state}
   end
 
   def handle_continue(
         :reply_with_handshake,
-        %{tcp_module: tcp_module, inet_module: inet_module, socket: socket} = state
+        %{info_hash: info_hash, peer_id: peer_id, socket: socket} = state
       ) do
-    handshake = PeerProtocol.encode_handshake(state[:info_hash], state[:peer_id])
+    handshake = PeerProtocol.encode_handshake(info_hash, peer_id)
 
-    :ok = tcp_module.send(socket, handshake)
+    :ok = :gen_tcp.send(socket, handshake)
 
-    set_post_handshake_socket_mode(socket, inet_module)
+    set_post_handshake_socket_mode(socket)
 
     state = Map.put(state, :socket, socket)
 
@@ -77,15 +82,15 @@ defmodule Etorrent.PeerWorker do
   # send bitfield
   def handle_continue(
         :open_peer_connection,
-        %{tcp_module: tcp_module, inet_module: inet_module, host: host, port: port} = state
+        %{host: host, port: port} = state
       ) do
-    {:ok, socket} = tcp_module.connect(host, port, [:binary])
+    {:ok, socket} = :gen_tcp.connect(host, port, [:binary])
 
     handshake = PeerProtocol.encode_handshake(state[:info_hash], state[:peer_id])
 
-    :ok = tcp_module.send(socket, handshake)
+    :ok = :gen_tcp.send(socket, handshake)
 
-    set_post_handshake_socket_mode(socket, inet_module)
+    set_post_handshake_socket_mode(socket)
 
     state = Map.put(state, :socket, socket)
 
@@ -94,14 +99,55 @@ defmodule Etorrent.PeerWorker do
 
   def handle_info(
         {:tcp, _socket, data},
-        %{info_hash: info_hash, socket: socket, inet_module: inet_module} = state
+        %{info_hash: info_hash, socket: socket} = state
       ) do
     {:ok, decoded} = PeerProtocol.decode(data)
 
     return =
       case decoded do
-        %PeerProtocol.Bitfield{bitfield: _bitfield} ->
+        %PeerProtocol.Choke{} ->
+          Logger.debug("peer_choking: true")
+          state = Map.put(state, :peer_choking, true)
           {:noreply, state}
+
+        %PeerProtocol.Unchoke{} ->
+          Logger.debug("peer_choking: false")
+          state = Map.put(state, :peer_choking, false)
+          {:noreply, state}
+
+        %PeerProtocol.Interested{} ->
+          Logger.debug("peer interested: true")
+          state = Map.put(state, :peer_interested, true)
+          {:noreply, state}
+
+        %PeerProtocol.NotInterested{} ->
+          Logger.debug("peer interested: false")
+          state = Map.put(state, :peer_interested, false)
+          {:noreply, state}
+
+        %PeerProtocol.Have{index: index} ->
+          Logger.debug("peer have #{index}")
+          TorrentWorker.peer_have(info_hash, index)
+          {:noreply, state}
+
+        %PeerProtocol.Bitfield{bitfield: bitfield} ->
+          Logger.debug("peer bitfield")
+          TorrentWorker.peer_bitfield(info_hash, bitfield)
+          {:noreply, state}
+
+        %PeerProtocol.Request{index: index, begin: begin, length: length} ->
+          Logger.debug("peer request #{index} #{begin} #{length}")
+          raise "todo"
+
+        %PeerProtocol.Piece{index: index, begin: begin, block: block} ->
+          Logger.debug("peer piece #{index} #{begin} block")
+          # TODO fix this
+          # Etorrent.DataFile.write_block(state[:file], )
+          raise "todo"
+
+        %PeerProtocol.Cancel{index: index, begin: begin, length: length} ->
+          Logger.debug("peer cancel #{index} #{begin} #{length}")
+          raise "todo"
 
         %PeerProtocol.Handshake{info_hash: remote_info_hash, peer_id: _remote_peer_id} ->
           if remote_info_hash == info_hash do
@@ -117,7 +163,7 @@ defmodule Etorrent.PeerWorker do
 
     Logger.debug("received data #{inspect(decoded)}")
 
-    make_active_once(socket, inet_module)
+    make_active_once(socket)
 
     return
   end
@@ -126,11 +172,11 @@ defmodule Etorrent.PeerWorker do
     {:noreply, state}
   end
 
-  def set_post_handshake_socket_mode(socket, inet_module) do
-    inet_module.setopts(socket, [:binary, active: :once, packet: 4])
+  def set_post_handshake_socket_mode(socket) do
+    :ok = :inet.setopts(socket, [:binary, active: :once, packet: 4])
   end
 
-  defp make_active_once(socket, inet_module) do
-    inet_module.setopts(socket, active: :once)
+  defp make_active_once(socket) do
+    :ok = :inet.setopts(socket, active: :once)
   end
 end

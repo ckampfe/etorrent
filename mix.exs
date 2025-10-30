@@ -66,7 +66,8 @@ defmodule Etorrent.MixProject do
       {:bandit, "~> 1.5"},
       {:recon, "~> 2.5"},
       {:observer_cli, "~> 1.8"},
-      {:req, "~> 0.5"}
+      {:req, "~> 0.5"},
+      {:bimap, "~> 1.3"}
     ]
   end
 

@@ -27,6 +27,13 @@ defmodule Etorrent.Tracker do
         url
       end
 
+    url =
+      if options[:compact] do
+        URI.append_query(url, "compact=1")
+      else
+        url
+      end
+
     response =
       Req.get(url)
 

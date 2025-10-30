@@ -10,6 +10,7 @@ defmodule Etorrent.Application do
     children = [
       EtorrentWeb.Telemetry,
       Etorrent.Repo,
+      Etorrent.InMemoryRepo,
       {Ecto.Migrator,
        repos: Application.fetch_env!(:etorrent, :ecto_repos), skip: skip_migrations?()},
       # {DNSCluster, query: Application.get_env(:etorrent, :dns_cluster_query) || :ignore},

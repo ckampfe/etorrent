@@ -14,7 +14,7 @@ defmodule Etorrent.DataFile do
 
   alias Etorrent.PeerProtocol.Piece
 
-  def open_or_create(path, size \\ nil, options \\ [:read, :write, :raw]) do
+  def open_or_create(path, size \\ nil, options \\ [:read, :write, :binary, :raw]) do
     if File.exists?(path) do
       :file.open(path, options)
     else
@@ -74,9 +74,9 @@ defmodule Etorrent.DataFile do
 
       %{hash: expected_hash, length: length} = get_piece_hash_and_length(self, i)
 
-      with {:ok, piece_on_disk} <- :file.pread(file, position, length) do
-        :crypto.hash(:sha, piece_on_disk) == expected_hash
-      end
+      # for now, crash
+      {:ok, piece_on_disk} = :file.pread(file, position, length)
+      :crypto.hash(:sha, piece_on_disk) == expected_hash
     end
 
     def piece_position(%__MODULE__{} = self, i) do

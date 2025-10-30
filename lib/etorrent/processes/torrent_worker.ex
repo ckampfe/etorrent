@@ -1,16 +1,3 @@
-# - how to tell which peers to download which pieces?
-#
-# - store a mapping of %{peer_id => [piece_index]}
-#
-# - for every index we don't have, pick a random peer.
-#
-# - store a list that at each index includes a set of peers that have that index
-# [%MapSet([id1, id2, id3, etc.]), etc.]
-# - keep this up to date when we receive "have" messages from peers.
-# - have peers forward the initial bitfield message to this process.
-#
-# - store a list of actively downloading pieces, and what peer is downloading them
-# - have a timer that times them out after a period of time
 defmodule Etorrent.TorrentWorker do
   use GenServer
   require Logger
@@ -33,6 +20,16 @@ defmodule Etorrent.TorrentWorker do
     GenServer.call(name(info_hash), {:register_new_peer, peer_pid, peer_id})
   end
 
+  def peer_have(info_hash, index) do
+    GenServer.call(name(info_hash), {:peer_have, index})
+  end
+
+  def peer_bitfield(info_hash, bitfield) do
+    GenServer.call(name(info_hash), {:peer_bitfield, bitfield})
+  end
+
+  ### CALLBACKS ###
+
   def init([torrent_file, data_path]) do
     peer_id_base = "-ET0001-"
 
@@ -48,11 +45,10 @@ defmodule Etorrent.TorrentWorker do
       data_path: data_path,
       info_hash: info_hash,
       state: :active,
-      peers: %{},
       peer_id: peer_id,
-      port: 7777,
-      pieces_have: [],
-      pieces_want: []
+      port: 9000,
+      # mapping of `piece index` -> `peer pid`
+      peers_have_pieces: BiMultiMap.new()
     }
 
     Logger.metadata(
@@ -67,21 +63,9 @@ defmodule Etorrent.TorrentWorker do
     # TODO load state and configuration from disk
     Logger.debug("#{__MODULE__}: #{inspect(state)}")
 
-    # torrent =
-    #   Torrent
-    #   |> where([m], m.info_hash == ^state[:info_hash])
-    #   |> Repo.one()
-
-    # torrent =
-    #   if meta do
-    #     meta
-    #   else
-    #     Repo.insert(%Torrent{info_hash: state[:info_hash]})
-    #   end
-
-    # piece_hashes_and_lengths = calculate_piece_lengths(state[:torrent_file][:info])
-
-    {:ok, data_file} = :file.open(state[:data_path], [:read, :raw, :binary])
+    # {:ok, data_file} = :file.open(state[:data_path], [:read, :raw, :binary])
+    {:ok, data_file} =
+      Etorrent.DataFile.open_or_create(state[:data_path], state[:torrent_file][:info][:length])
 
     piece_hashes_and_lengths = DataFile.PieceHashes.new(state[:torrent_file][:info])
 
@@ -98,15 +82,10 @@ defmodule Etorrent.TorrentWorker do
     {:noreply, state}
   end
 
-  def handle_call({:register_new_peer, peer_pid, peer_id}, _from, state) do
-    peer_ref = Process.monitor(peer_pid)
+  def handle_call({:register_new_peer, peer_pid, peer_id}, _from, %{data_path: data_path} = state) do
+    _peer_ref = Process.monitor(peer_pid)
 
-    state =
-      Map.update!(state, :peers, fn peers ->
-        Map.put(peers, peer_id, {peer_pid, peer_ref})
-      end)
-
-    PeerWorker.give_peer_id(peer_pid, state[:peer_id])
+    PeerWorker.give_peer_id(peer_pid, state[:peer_id], data_path)
 
     {:reply, :ok, state}
   end
@@ -121,11 +100,57 @@ defmodule Etorrent.TorrentWorker do
         progress: 0,
         download: 0,
         upload: 0,
-        peers: state[:peers],
+        # TODO
+        peers: %{},
         ratio: 0.0,
         pieces: state[:pieces_statuses]
       }}, state}
   end
+
+  def handle_call({:peer_have, index}, {peer_pid, _tag}, state) do
+    state =
+      Map.update!(state, :peers_have_pieces, fn mapping ->
+        BiMultiMap.put(mapping, index, peer_pid)
+      end)
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:peer_bitfield, bitfield}, {peer_pid, _tag} = _from, state) do
+    # what do we want?
+    #
+    # we want to be able to say, efficiently:
+    # - give me a peer that has this piece
+    # - peer has disconnected: remove all pieces from "available pieces" for peer
+    # - tell me a piece I don't have
+    # - peer now has this piece
+    #
+    # bitfield is 1's and 0's corresponding to piece indexes
+    #
+    # idx -> [peer]
+    #
+    # but how do you efficiently remove peer in the case of disconnection?
+    # you can't, it's linear in the number of indexes
+    state =
+      Map.update!(state, :peers_have_pieces, fn mapping ->
+        for <<have::1 <- bitfield>>, reduce: {mapping, 0} do
+          {acc, i} ->
+            if have do
+              {BiMultiMap.put(acc, i, peer_pid), i + 1}
+            else
+              {acc, i + 1}
+            end
+        end
+      end)
+
+    {:reply, :ok, state}
+  end
+
+  # TODO
+  #
+  # do we want to store peer choked/interested state in this process?
+  # peer processes do not make the determination to download on their own
+  # they are dumb, they should only begin downloading if commanded
 
   def handle_info(:announce, state) do
     Logger.debug("announcing to #{inspect(state[:torrent_file][:announce])}")
@@ -163,21 +188,21 @@ defmodule Etorrent.TorrentWorker do
     # is there still work to do?
     # if so, schedule it
     # if not, do nothing
+
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
-    peers =
-      state[:peers]
-      |> Enum.filter(fn {_peer_id, peer_pid_and_ref} ->
-        peer_pid_and_ref != {ref, pid}
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    state =
+      state
+      |> Map.update!(:peers_have_pieces, fn peers_have_pieces ->
+        BiMultiMap.delete_value(peers_have_pieces, pid)
       end)
-      |> Map.new()
-
-    state = Map.put(state, :peers, peers)
 
     {:noreply, state}
   end
+
+  ### PRIVATE ###
 
   defp name(info_hash) do
     {:via, Registry, {Etorrent.Registry, {__MODULE__, info_hash}}}
