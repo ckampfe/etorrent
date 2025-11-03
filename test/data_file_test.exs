@@ -24,4 +24,10 @@ defmodule Etorrent.DataFileTest do
       assert bit == 1
     end
   end
+
+  test "set_bit/2" do
+    assert <<1::1, 0::1, 0::1>> = DataFile.set_bit(<<0::1, 0::1, 0::1>>, 0)
+    assert <<0::1, 1::1, 0::1>> = DataFile.set_bit(<<0::1, 0::1, 0::1>>, 1)
+    assert <<0::1, 0::1, 1::1>> = DataFile.set_bit(<<0::1, 0::1, 0::1>>, 2)
+  end
 end
