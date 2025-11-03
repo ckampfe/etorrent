@@ -122,29 +122,36 @@ defmodule Etorrent.TorrentWorker do
   def handle_call(
         {:register_new_peer, peer_pid, _peer_id},
         _from,
-        %{data_path: data_path} = state
+        %State{data_path: data_path, peer_id: peer_id} = state
       ) do
     _peer_ref = Process.monitor(peer_pid)
 
-    PeerWorker.give_peer_id(peer_pid, state[:peer_id], data_path)
+    PeerWorker.give_peer_id(peer_pid, peer_id, data_path)
 
     {:reply, :ok, state}
   end
 
-  def handle_call(:get_metrics, _from, state) do
+  def handle_call(
+        :get_metrics,
+        _from,
+        %State{info_hash: info_hash, piece_statuses: piece_statuses} = state
+      ) do
+    {:ok, name} = TorrentFile.name(info_hash)
+    {:ok, length} = TorrentFile.length(info_hash)
+
     {:reply,
      {:ok,
       %{
-        info_hash: state[:info_hash] |> Base.encode16(),
-        name: state[:torrent_file][:info][:name],
-        size: state[:torrent_file][:info][:length],
+        info_hash: Base.encode16(info_hash),
+        name: name,
+        size: length,
         progress: 0,
         download: 0,
         upload: 0,
         # TODO
         peers: %{},
         ratio: 0.0,
-        pieces: state[:pieces_statuses]
+        pieces: piece_statuses
       }}, state}
   end
 
