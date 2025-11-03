@@ -6,10 +6,10 @@ defmodule Etorrent.TorrentsSupervisor do
     DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
   end
 
-  def start_child(torrent_file, data_path) do
+  def start_child(info_hash, data_path) do
     DynamicSupervisor.start_child(
       __MODULE__,
-      {Etorrent.TorrentSupervisor, [torrent_file, data_path]}
+      {Etorrent.TorrentSupervisor, [info_hash, data_path]}
     )
   end
 

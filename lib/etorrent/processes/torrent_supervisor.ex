@@ -3,16 +3,15 @@ defmodule Etorrent.TorrentSupervisor do
   require Logger
   alias Etorrent.{TorrentWorker, PeerSupervisor}
 
-  def start_link([torrent_file, _data_path] = args) do
-    info_hash = Etorrent.info_hash(torrent_file)
+  def start_link([info_hash, _data_path] = args) do
     Supervisor.start_link(__MODULE__, args, name: name(info_hash))
   end
 
   @impl true
-  def init([torrent_file, _data_path] = args) do
+  def init([info_hash, _data_path] = args) do
     children = [
       {TorrentWorker, args},
-      {PeerSupervisor, torrent_file}
+      {PeerSupervisor, info_hash}
     ]
 
     Logger.debug("starting torrent children")

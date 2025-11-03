@@ -1,8 +1,6 @@
 defmodule EtorrentWeb.TorrentController do
   use EtorrentWeb, :controller
 
-  alias Etorrent.Bencode
-
   def index(conn, params) do
     torrents = Etorrent.get_all_torrent_metrics()
 
@@ -19,12 +17,11 @@ defmodule EtorrentWeb.TorrentController do
         conn,
         %{"torrent_file" => torrent_file, "data_path" => dangerous_data_path} = _params
       ) do
-    f = File.read!(torrent_file.path)
+    {:ok, _} = File.stat(dangerous_data_path)
 
-    {:ok, decoded_torrent_file} =
-      Bencode.decode(f, atom_keys: true)
+    torrent_binary = File.read!(torrent_file.path)
 
-    Etorrent.new_torrent(decoded_torrent_file, dangerous_data_path)
+    Etorrent.new_torrent(torrent_binary, dangerous_data_path)
 
     conn
     |> redirect(to: ~p"/")

@@ -6,30 +6,35 @@ defmodule Etorrent do
   Contexts are also responsible for managing your data, regardless
   if it comes from the database, an external API or others.
   """
-  alias Etorrent.{TorrentWorker, PeerSupervisor, TorrentsSupervisor, Repo, Torrent, Bencode}
+  alias Etorrent.{
+    TorrentWorker,
+    PeerSupervisor,
+    TorrentsSupervisor,
+    Repo,
+    Torrent,
+    Bencode,
+    TorrentFile
+  }
+
   import Ecto.Query
   require Logger
 
-  def new_torrent(torrent_file, data_path) do
-    info_hash = info_hash(torrent_file)
+  def new_torrent(torrent_binary, data_path) when is_binary(torrent_binary) do
+    {:ok, info_hash} = TorrentFile.new(torrent_binary)
 
     # TODO any kind of path validation - but this assumes a trusted machine/user
-    data_path = Path.join([data_path, torrent_file[:info][:name]])
-
-    {:ok, encoded_torrent_file} =
-      Bencode.encode(torrent_file)
-
-    encoded_torrent_file = :erlang.iolist_to_binary(encoded_torrent_file)
+    {:ok, torrent_name} = TorrentFile.name(info_hash)
+    data_path = Path.join([data_path, torrent_name])
 
     %Torrent{}
     |> Torrent.changeset(%{
       info_hash: info_hash,
-      file: encoded_torrent_file,
+      file: torrent_binary,
       data_path: data_path
     })
     |> Repo.insert()
 
-    TorrentsSupervisor.start_child(torrent_file, data_path)
+    TorrentsSupervisor.start_child(info_hash, data_path)
   end
 
   def load_all_existing_torrents do

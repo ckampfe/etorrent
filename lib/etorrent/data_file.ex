@@ -13,6 +13,7 @@ defmodule Etorrent.DataFile do
   """
 
   alias Etorrent.PeerProtocol.Piece
+  alias Etorrent.TorrentFile
 
   def open_or_create(path, size \\ nil, options \\ [:read, :write, :binary, :raw]) do
     if File.exists?(path) do
@@ -33,74 +34,45 @@ defmodule Etorrent.DataFile do
     :file.pwrite(file, position, block)
   end
 
-  defmodule PieceHashes do
-    defstruct [:piece_hashes, :nominal_piece_length, :last_piece_length]
+  def verify_pieces(info_hash, data_file) do
+    {:ok, number_of_pieces} = TorrentFile.number_of_pieces(info_hash)
 
-    def new(%{
-          pieces: pieces,
-          length: data_length,
-          "piece length": nominal_piece_length
-        }) do
-      piece_hashes =
-        for <<hash::binary-20 <- pieces>> do
-          hash
+    {:ok, piece_positions_and_lengths} = TorrentFile.piece_positions_lengths_and_hashes(info_hash)
+
+    bitfield = <<0::size(number_of_pieces)>>
+
+    # TODO: parallelize
+    out =
+      piece_positions_and_lengths
+      |> Enum.with_index()
+      |> Enum.reduce_while(bitfield, fn {%{
+                                           position: position,
+                                           length: length,
+                                           hash: expected_hash
+                                         }, i},
+                                        acc ->
+        case :file.pread(data_file, position, length) do
+          {:ok, piece} ->
+            if :crypto.hash(:sha, piece) == expected_hash do
+              acc = set_bit(acc, i)
+              {:cont, acc}
+            else
+              {:cont, acc}
+            end
+
+          {:error, e} ->
+            {:halt, {:error, e, i}}
         end
-
-      delta =
-        length(piece_hashes) * nominal_piece_length - data_length
-
-      last_piece_length =
-        nominal_piece_length - delta
-
-      %__MODULE__{
-        piece_hashes: piece_hashes,
-        nominal_piece_length: nominal_piece_length,
-        last_piece_length: last_piece_length
-      }
-    end
-
-    # TODO parallelize this
-    def verify_pieces(self, file) do
-      len = count(self)
-
-      Enum.reduce(0..(len - 1), [], fn i, acc ->
-        [verify_piece(self, i, file) | acc]
       end)
-      |> Enum.reverse()
+
+    case out do
+      {:error, _e, _i} = error -> error
+      _ -> {:ok, out}
     end
+  end
 
-    def verify_piece(self, i, file) do
-      position = piece_position(self, i)
-
-      %{hash: expected_hash, length: length} = get_piece_hash_and_length(self, i)
-
-      # for now, crash
-      {:ok, piece_on_disk} = :file.pread(file, position, length)
-      :crypto.hash(:sha, piece_on_disk) == expected_hash
-    end
-
-    def piece_position(%__MODULE__{} = self, i) do
-      i * self.nominal_piece_length
-    end
-
-    def count(%__MODULE__{piece_hashes: piece_hashes}) do
-      Kernel.length(piece_hashes)
-    end
-
-    def get_piece_hash_and_length(%__MODULE__{} = self, i) do
-      hash = Enum.at(self.piece_hashes, i)
-
-      length =
-        if i == length(self.piece_hashes) - 1 do
-          self.last_piece_length
-        else
-          self.nominal_piece_length
-        end
-
-      %{
-        hash: hash,
-        length: length
-      }
-    end
+  def set_bit(b, i) when is_bitstring(b) do
+    <<prefix::bits-size(i), _this::bits-1, rest::bits>> = b
+    <<prefix::bits, 1::1, rest::bits>>
   end
 end

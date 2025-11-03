@@ -1,10 +1,25 @@
+# need to figure out what state we need
+# - what pieces we have
+# - what pieces we want
+# - what pieces peers have
+# - what pieces we have requested from peers
+#
+# with operations:
+# - [x] load our had/want pieces from disk on start (bitfield)
+# - [ ] store that we now have a piece
+# - [x] store that a peer has a piece
+# - [x] store that we have requested a piece from a peer
+# - [x] remove requests when a peer disconnects
+# - [ ] remove requests when a peer chokes
+# - [ ] track state of what peers are choking us
+# - [i] get random "want" piece that we haven't already requested
+
 defmodule Etorrent.TorrentWorker do
   use GenServer
   require Logger
-  alias Etorrent.{Tracker, PeerWorker, DataFile}
+  alias Etorrent.{Tracker, PeerWorker, DataFile, TorrentFile}
 
-  def start_link([torrent_file, _data_path] = args) do
-    info_hash = Etorrent.info_hash(torrent_file)
+  def start_link([info_hash, _data_path] = args) do
     GenServer.start_link(__MODULE__, args, name: name(info_hash))
   end
 
@@ -14,6 +29,10 @@ defmodule Etorrent.TorrentWorker do
 
   def get_metrics(info_hash) do
     GenServer.call(name(info_hash), :get_metrics)
+  end
+
+  def get_padded_bitfield(info_hash) do
+    GenServer.call(name(info_hash), :get_padded_bitfield)
   end
 
   def register_new_peer(info_hash, peer_pid, peer_id) do
@@ -30,7 +49,20 @@ defmodule Etorrent.TorrentWorker do
 
   ### CALLBACKS ###
 
-  def init([torrent_file, data_path]) do
+  defmodule State do
+    defstruct [
+      :info_hash,
+      :data_path,
+      :port,
+      :peer_id,
+      piece_statuses: <<>>,
+      peers_have_pieces: BiMultiMap.new(),
+      requests: BiMultiMap.new(),
+      state: :started
+    ]
+  end
+
+  def init([info_hash, data_path]) do
     peer_id_base = "-ET0001-"
 
     peer_id =
@@ -38,51 +70,56 @@ defmodule Etorrent.TorrentWorker do
         acc <> to_string(:rand.uniform(10) - 1)
       end)
 
-    info_hash = Etorrent.info_hash(torrent_file)
-
-    state = %{
-      torrent_file: torrent_file,
-      data_path: data_path,
+    state = %State{
       info_hash: info_hash,
-      state: :active,
+      data_path: data_path,
+      state: :started,
       peer_id: peer_id,
       port: 9000,
+      # `[true, false, false, true]`, etc.
+      # where idx is the piece and bool is whether we have it or not
+      piece_statuses: <<>>,
       # mapping of `piece index` -> `peer pid`
-      peers_have_pieces: BiMultiMap.new()
+      peers_have_pieces: BiMultiMap.new(),
+      # `peer pid` -> `piece index`
+      requests: BiMultiMap.new()
     }
 
     Logger.metadata(
       info_hash: Base.encode16(info_hash) |> String.slice(0..5),
-      name: torrent_file[:info][:name]
+      name: TorrentFile.name(info_hash)
     )
 
     {:ok, state, {:continue, :setup}}
   end
 
-  def handle_continue(:setup, state) do
+  def handle_continue(:setup, %State{info_hash: info_hash, data_path: data_path} = state) do
     # TODO load state and configuration from disk
     Logger.debug("#{__MODULE__}: #{inspect(state)}")
 
-    # {:ok, data_file} = :file.open(state[:data_path], [:read, :raw, :binary])
     {:ok, data_file} =
-      Etorrent.DataFile.open_or_create(state[:data_path], state[:torrent_file][:info][:length])
+      DataFile.open_or_create(
+        data_path,
+        TorrentFile.length(info_hash)
+      )
 
-    piece_hashes_and_lengths = DataFile.PieceHashes.new(state[:torrent_file][:info])
+    {:ok, piece_statuses} = DataFile.verify_pieces(info_hash, data_file)
 
-    pieces_statuses = DataFile.PieceHashes.verify_pieces(piece_hashes_and_lengths, data_file)
-
-    state =
-      state
-      |> Map.put(:piece_hashes_and_lengths, piece_hashes_and_lengths)
-      |> Map.put(:pieces_statuses, pieces_statuses)
+    state = %{state | piece_statuses: piece_statuses}
 
     send(self(), :announce)
     send(self(), :tick)
 
+    Process.send_after(self(), :clear_old_requests, :timer.seconds(5))
+
     {:noreply, state}
   end
 
-  def handle_call({:register_new_peer, peer_pid, peer_id}, _from, %{data_path: data_path} = state) do
+  def handle_call(
+        {:register_new_peer, peer_pid, _peer_id},
+        _from,
+        %{data_path: data_path} = state
+      ) do
     _peer_ref = Process.monitor(peer_pid)
 
     PeerWorker.give_peer_id(peer_pid, state[:peer_id], data_path)
@@ -105,6 +142,16 @@ defmodule Etorrent.TorrentWorker do
         ratio: 0.0,
         pieces: state[:pieces_statuses]
       }}, state}
+  end
+
+  def handle_call(:get_padded_bitfield, _from, %State{piece_statuses: piece_statuses} = state) do
+    length = bit_size(piece_statuses)
+
+    padding = <<0::size(ceil(length / 8) * 8 - length)>>
+
+    padded_bitfield = <<piece_statuses::bits, padding::bits>>
+
+    {:reply, {:ok, padded_bitfield}, state}
   end
 
   def handle_call({:peer_have, index}, {peer_pid, _tag}, state) do
@@ -142,6 +189,8 @@ defmodule Etorrent.TorrentWorker do
             end
         end
       end)
+
+    Process.send_after(self(), :tick, 100)
 
     {:reply, :ok, state}
   end
@@ -184,10 +233,77 @@ defmodule Etorrent.TorrentWorker do
     {:noreply, state}
   end
 
-  def handle_info(:tick, state) do
+  def handle_info(
+        :tick,
+        %{
+          piece_statuses: piece_statuses,
+          requests: requests,
+          peers_have_pieces: peers_have_pieces
+        } = state
+      ) do
     # is there still work to do?
     # if so, schedule it
     # if not, do nothing
+
+    # 1. pieces we want
+    pieces_wanted =
+      piece_statuses
+      |> Stream.with_index()
+      |> Stream.filter(fn {have, _idx} ->
+        !have
+      end)
+      |> Stream.map(fn {_have, idx} -> idx end)
+      |> MapSet.new()
+
+    # 2. pieces that aren't already requested
+    requested_pieces = BiMultiMap.values(requests) |> MapSet.new()
+
+    wanted_and_not_requested = MapSet.difference(pieces_wanted, requested_pieces)
+
+    # 3. that are available
+    available_pieces = BiMultiMap.keys(peers_have_pieces)
+
+    wanted_available_and_not_requested =
+      MapSet.intersection(wanted_and_not_requested, available_pieces)
+
+    pieces_to_request = Enum.take(wanted_available_and_not_requested, 5)
+
+    # TODO conditional to not do anything if no requests
+    if Enum.empty?(pieces_to_request) do
+      Logger.debug("no pieces to request, doing nothing this tick")
+      Process.send_after(self(), :tick, :timer.seconds(3))
+      {:noreply, state}
+    else
+      IO.inspect(pieces_to_request, label: "pieces to request")
+
+      requests =
+        Enum.map(pieces_to_request, fn idx ->
+          peer =
+            peers_have_pieces
+            |> BiMultiMap.get(idx)
+            |> Enum.random()
+
+          {peer, idx}
+        end)
+
+      Enum.each(requests, fn {peer, idx} ->
+        PeerWorker.request_piece(peer, idx)
+        Logger.debug("asked peer #{inspect(peer)} to request piece #{idx}")
+      end)
+
+      state = Map.put(state, :requests, requests)
+
+      Process.send_after(self(), :tick, :timer.seconds(1))
+
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(:clear_old_requests, state) do
+    state = Map.put(state, :requests, BiMultiMap.new())
+    Logger.debug("cleared old requests")
+
+    Process.send_after(self(), :clear_old_requests, :timer.seconds(3))
 
     {:noreply, state}
   end
@@ -197,6 +313,9 @@ defmodule Etorrent.TorrentWorker do
       state
       |> Map.update!(:peers_have_pieces, fn peers_have_pieces ->
         BiMultiMap.delete_value(peers_have_pieces, pid)
+      end)
+      |> Map.update!(:requests, fn requests ->
+        BiMultiMap.delete(requests, pid)
       end)
 
     {:noreply, state}
