@@ -21,6 +21,10 @@ defmodule Etorrent.TorrentFileTest do
     assert {:ok, 978_864} = TorrentFile.length(info_hash)
   end
 
+  test "announce/1", %{info_hash: info_hash} do
+    assert {:ok, "http://localhost:8000/announce"} = TorrentFile.announce(info_hash)
+  end
+
   test "number_of_pieces/1", %{info_hash: info_hash} do
     assert {:ok, 30} = TorrentFile.number_of_pieces(info_hash)
   end

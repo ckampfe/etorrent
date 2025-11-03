@@ -32,6 +32,11 @@ defmodule Etorrent.TorrentFile do
     {:ok, length}
   end
 
+  def announce(info_hash) do
+    %{announce: announce} = :persistent_term.get(lookup_name(info_hash))
+    {:ok, announce}
+  end
+
   @doc """
   "Every piece is of equal length except for the final piece, which is irregular.
   The number of pieces is thus determined by 'ceil( total length / piece size )'."

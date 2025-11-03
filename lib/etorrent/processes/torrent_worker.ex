@@ -13,6 +13,9 @@
 # - [ ] remove requests when a peer chokes
 # - [ ] track state of what peers are choking us
 # - [i] get random "want" piece that we haven't already requested
+# - [ ] store interested/choked status on this TorrentWorker rather than in each process
+# - [ ] compute "left" amount being (length - have) to send to tracker
+# - [ ] connect to peers after we get them from announce, if we are leaching
 
 defmodule Etorrent.TorrentWorker do
   use GenServer
@@ -55,6 +58,7 @@ defmodule Etorrent.TorrentWorker do
       :data_path,
       :port,
       :peer_id,
+      :announce_response,
       piece_statuses: <<>>,
       peers_have_pieces: BiMultiMap.new(),
       requests: BiMultiMap.new(),
@@ -201,20 +205,22 @@ defmodule Etorrent.TorrentWorker do
   # peer processes do not make the determination to download on their own
   # they are dumb, they should only begin downloading if commanded
 
-  def handle_info(:announce, state) do
-    Logger.debug("announcing to #{inspect(state[:torrent_file][:announce])}")
+  def handle_info(:announce, %State{info_hash: info_hash, peer_id: peer_id, port: port} = state) do
+    Logger.debug("announcing to #{inspect(TorrentFile.announce(info_hash))}")
 
-    # TODO FIX: for some reason announce is only returning this same peer. why?
+    {:ok, length} = TorrentFile.length(info_hash)
+
     announce_response =
-      case Tracker.announce(state[:torrent_file], state[:peer_id], state[:port],
+      case Tracker.announce(info_hash, peer_id, port,
              event: "started",
-             left: state[:torrent_file][:info][:length]
+             # TODO compute real "left"
+             left: length
            ) do
         {:ok, announce_response} ->
           announce_response =
             Map.update!(announce_response, :peers, fn peers ->
               Enum.filter(peers, fn %{"peer id": other_peer_id} ->
-                other_peer_id != state.peer_id
+                other_peer_id != peer_id
               end)
             end)
 
@@ -228,7 +234,7 @@ defmodule Etorrent.TorrentWorker do
           error
       end
 
-    state = Map.put(state, :announce_response, announce_response)
+    state = %{state | announce_response: announce_response}
 
     {:noreply, state}
   end

@@ -1,11 +1,11 @@
 defmodule Etorrent.Tracker do
-  alias Etorrent.Bencode
+  alias Etorrent.{Bencode, TorrentFile}
 
-  def announce(torrent_file, peer_id, port, options \\ [compact: false]) do
-    info_hash = Etorrent.info_hash(torrent_file)
+  def announce(info_hash, peer_id, port, options \\ [compact: false]) do
+    announce_url = TorrentFile.announce(info_hash)
 
     url =
-      torrent_file[:announce]
+      announce_url
       |> URI.parse()
       |> URI.append_query("info_hash=#{URI.encode(info_hash, &URI.char_unreserved?/1)}")
       |> URI.append_query("peer_id=#{URI.encode(peer_id, &URI.char_unreserved?/1)}")
