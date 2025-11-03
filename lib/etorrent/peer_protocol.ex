@@ -71,36 +71,40 @@ defmodule Etorrent.PeerProtocol do
         <<0, 0, 0, 1, 3>>
 
       %Have{index: index} ->
-        [:binary.encode_unsigned(5), <<4>>, :binary.encode_unsigned(index)]
+        [encode_integer(5), <<4>>, encode_integer(index)]
 
       %Bitfield{bitfield: bitfield} ->
-        [:binary.encode_unsigned(1 + byte_size(bitfield)), <<5>>, bitfield]
+        length = 1 + byte_size(bitfield)
+
+        [encode_integer(length), <<5>>, bitfield]
 
       %Request{index: index, begin: begin, length: length} ->
         [
-          <<0, 0, 0, 13, 6>>,
-          :binary.encode_unsigned(index),
-          :binary.encode_unsigned(begin),
-          :binary.encode_unsigned(length)
+          <<0, 0, 0, 13>>,
+          <<6>>,
+          encode_integer(index),
+          encode_integer(begin),
+          encode_integer(length)
         ]
 
       %Piece{index: index, begin: begin, block: block} ->
         length = 9 + byte_size(block)
 
         [
-          :binary.encode_unsigned(length),
+          encode_integer(length),
           <<7>>,
-          :binary.encode_unsigned(index),
-          :binary.encode_unsigned(begin),
+          encode_integer(index),
+          encode_integer(begin),
           block
         ]
 
       %Cancel{index: index, begin: begin, length: length} ->
         [
-          <<0, 0, 0, 13, 8>>,
-          :binary.encode_unsigned(index),
-          :binary.encode_unsigned(begin),
-          :binary.encode_unsigned(length)
+          <<0, 0, 0, 13>>,
+          <<8>>,
+          encode_integer(index),
+          encode_integer(begin),
+          encode_integer(length)
         ]
     end
   end
@@ -141,5 +145,10 @@ defmodule Etorrent.PeerProtocol do
       data ->
         {:error, :unknown_data, data}
     end
+  end
+
+  # 4 byte big endian u32
+  defp encode_integer(i) do
+    <<i::big-integer-32>>
   end
 end
