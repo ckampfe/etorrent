@@ -82,52 +82,6 @@ defmodule Etorrent.TorrentFile do
     {:ok, Enum.reverse(out)}
   end
 
-  # def last_piece_length(info_hash) do
-  #   %{info: %{length: real_length, "piece length": piece_length}} =
-  #     :persistent_term.get(lookup_name(info_hash))
-
-  #   number_of_pieces = ceil(real_length / piece_length)
-
-  #   nominal_length = number_of_pieces * piece_length
-
-  #   delta = nominal_length - real_length
-
-  #   last_piece_length = piece_length - delta
-
-  #   {:ok, last_piece_length}
-  # end
-
-  # def length_of_piece(info_hash, i) do
-  #   %{info: %{length: real_length, "piece length": nominal_piece_length}} =
-  #     :persistent_term.get(lookup_name(info_hash))
-
-  #   number_of_pieces = ceil(real_length / nominal_piece_length)
-
-  #   is_last_piece? = i == number_of_pieces - 1
-
-  #   real_piece_length =
-  #     if is_last_piece? do
-  #       nominal_length = number_of_pieces * nominal_piece_length
-
-  #       delta = nominal_length - real_length
-
-  #       last_piece_length = nominal_piece_length - delta
-
-  #       last_piece_length
-  #     else
-  #       nominal_piece_length
-  #     end
-
-  #   {:ok, real_piece_length}
-  # end
-
-  # def piece_hash(info_hash, piece_index) do
-  #   %{info: %{pieces: piece_hashes}} = :persistent_term.get(lookup_name(info_hash))
-  #   bytes_to_skip = piece_index * 20
-  #   <<_skipped::binary-size(bytes_to_skip), piece_hash::binary-20, _rest::binary>> = piece_hashes
-  #   {:ok, piece_hash}
-  # end
-
   defp info_hash(%{info: info}) do
     info
     |> Bencode.encode()
