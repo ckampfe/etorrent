@@ -16,13 +16,21 @@ defmodule Etorrent.DataFileTest do
     %{info_hash: info_hash, data_file: data_file}
   end
 
-  test "verify_pieces/2", %{info_hash: info_hash, data_file: data_file} do
-    assert {:ok, bits} = DataFile.verify_pieces(info_hash, data_file)
+  test "verify_all_pieces/2", %{info_hash: info_hash, data_file: data_file} do
+    assert {:ok, bits} = DataFile.verify_all_pieces(info_hash, data_file)
     assert bit_size(bits) == 30
 
     for <<bit::1 <- bits>> do
       assert bit == 1
     end
+  end
+
+  test "verify_piece/2", %{info_hash: info_hash, data_file: data_file} do
+    {:ok, number_of_pieces} = TorrentFile.number_of_pieces(info_hash)
+
+    Enum.each(0..(number_of_pieces - 1), fn i ->
+      assert {:ok, true} = DataFile.verify_piece(info_hash, data_file, i)
+    end)
   end
 
   test "set_bit/2" do

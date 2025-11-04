@@ -1,3 +1,7 @@
+# TODO
+#
+# - [ ] figure out socket send timeouts
+
 defmodule Etorrent.PeerWorker do
   use GenServer, restart: :temporary
   require Logger
@@ -11,8 +15,12 @@ defmodule Etorrent.PeerWorker do
     GenServer.start_link(__MODULE__, {:outoing, args})
   end
 
-  def request_piece(server, piece_idx) do
-    GenServer.call(server, {:request_piece, piece_idx})
+  def request_piece(server, idx) do
+    GenServer.call(server, {:request_piece, idx})
+  end
+
+  def we_have_piece(server, idx) do
+    GenServer.cast(server, {:we_have_piece, idx})
   end
 
   # def init({:incoming, args}) do
@@ -139,9 +147,15 @@ defmodule Etorrent.PeerWorker do
     {:noreply, state}
   end
 
+  def handle_cast({:we_have_piece, idx}, %State{socket: socket} = state) do
+    encoded_have = PeerProtocol.encode(%PeerProtocol.Have{index: idx})
+    :ok = :gen_tcp.send(socket, encoded_have)
+    {:noreply, state}
+  end
+
   def handle_info(
         {:tcp, _socket, data},
-        %State{info_hash: info_hash, socket: socket} = state
+        %State{info_hash: info_hash, socket: socket, data_file: data_file} = state
       ) do
     {:ok, decoded} = PeerProtocol.decode(data)
 
@@ -181,11 +195,19 @@ defmodule Etorrent.PeerWorker do
           Logger.debug("peer request #{index} #{begin} #{length}")
           raise "todo"
 
-        %PeerProtocol.Piece{index: index, begin: begin, block: block} ->
-          Logger.debug("peer piece #{index} #{begin} block")
-          # TODO fix this
-          # Etorrent.DataFile.write_block(state[:file], )
-          raise "todo"
+        %PeerProtocol.Piece{index: index, begin: begin, block: _chunk} = piece_message ->
+          Logger.debug("received peer piece message #{index} #{begin} block")
+
+          :ok = DataFile.write_block(info_hash, data_file, piece_message)
+
+          {:ok, have?} = DataFile.verify_piece(info_hash, data_file, index)
+
+          if have? do
+            Logger.debug("have now have piece #{index}")
+            :ok = TorrentWorker.we_have_piece(info_hash, index)
+          end
+
+          {:noreply, state}
 
         %PeerProtocol.Cancel{index: index, begin: begin, length: length} ->
           Logger.debug("peer cancel #{index} #{begin} #{length}")

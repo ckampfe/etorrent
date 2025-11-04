@@ -29,12 +29,15 @@ defmodule Etorrent.DataFile do
 
   # file should be an opaque handle, to allow the
   # use of ram files for testing
-  def write_block(file, piece_length, %Piece{index: index, begin: offset, block: block}) do
-    position = index * piece_length + offset
+  def write_block(info_hash, file, %Piece{index: index, begin: offset, block: block}) do
+    {:ok, nominal_piece_length} = TorrentFile.nominal_piece_length(info_hash)
+
+    position = index * nominal_piece_length + offset
+
     :file.pwrite(file, position, block)
   end
 
-  def verify_pieces(info_hash, data_file) do
+  def verify_all_pieces(info_hash, data_file) do
     {:ok, number_of_pieces} = TorrentFile.number_of_pieces(info_hash)
 
     {:ok, piece_positions_and_lengths} = TorrentFile.piece_positions_lengths_and_hashes(info_hash)
@@ -68,6 +71,14 @@ defmodule Etorrent.DataFile do
     case out do
       {:error, _e, _i} = error -> error
       _ -> {:ok, out}
+    end
+  end
+
+  def verify_piece(info_hash, data_file, i) do
+    with {:ok, %{position: position, length: length, hash: expected_hash}} <-
+           TorrentFile.piece_position_length_and_hash(info_hash, i),
+         {:ok, piece} <- :file.pread(data_file, position, length) do
+      {:ok, :crypto.hash(:sha, piece) == expected_hash}
     end
   end
 

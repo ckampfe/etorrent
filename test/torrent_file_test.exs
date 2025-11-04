@@ -245,4 +245,14 @@ defmodule Etorrent.TorrentFileTest do
             ]} =
              TorrentFile.piece_positions_lengths_and_hashes(info_hash)
   end
+
+  test "piece_position_length_and_hash/2", %{info_hash: info_hash} do
+    {:ok, all} = TorrentFile.piece_positions_lengths_and_hashes(info_hash)
+    {:ok, number_of_pieces} = TorrentFile.number_of_pieces(info_hash)
+
+    Enum.each(0..(number_of_pieces - 1), fn i ->
+      {:ok, position_length_and_hash} = TorrentFile.piece_position_length_and_hash(info_hash, i)
+      assert position_length_and_hash == Enum.at(all, i)
+    end)
+  end
 end
