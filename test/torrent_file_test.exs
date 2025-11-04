@@ -255,4 +255,11 @@ defmodule Etorrent.TorrentFileTest do
       assert position_length_and_hash == Enum.at(all, i)
     end)
   end
+
+  test "chunkify/2" do
+    assert [{0, 50}, {50, 50}] = TorrentFile.chunkify(100, 50)
+    assert [{0, 50}, {50, 50}, {100, 1}] = TorrentFile.chunkify(101, 50)
+    assert [{0, 20}] = TorrentFile.chunkify(20, 50)
+    assert [{0, 1}, {1, 1}, {2, 1}, {3, 1}, {4, 1}] = TorrentFile.chunkify(5, 1)
+  end
 end

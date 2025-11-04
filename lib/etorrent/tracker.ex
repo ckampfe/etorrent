@@ -2,7 +2,7 @@ defmodule Etorrent.Tracker do
   alias Etorrent.{Bencode, TorrentFile}
 
   def announce(info_hash, peer_id, port, options \\ [compact: false]) do
-    announce_url = TorrentFile.announce(info_hash)
+    {:ok, announce_url} = TorrentFile.announce(info_hash)
 
     url =
       announce_url

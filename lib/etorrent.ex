@@ -44,8 +44,8 @@ defmodule Etorrent do
     # TODO parallelize
     |> Enum.each(fn torrent ->
       Logger.debug("Loading torrent #{Base.encode16(torrent.info_hash)}")
-      {:ok, decoded_torrent_file} = Bencode.decode(torrent.file, atom_keys: true)
-      TorrentsSupervisor.start_child(decoded_torrent_file, torrent.data_path)
+      {:ok, _info_hash} = TorrentFile.new(torrent.file)
+      TorrentsSupervisor.start_child(torrent.info_hash, torrent.data_path)
     end)
   end
 

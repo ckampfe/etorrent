@@ -82,29 +82,52 @@ defmodule Etorrent.TorrentFile do
     {:ok, Enum.reverse(out)}
   end
 
-  # def verify_piece(info_hash, i) do
-  #   %{info: %{pieces: piece_hashes, length: real_length, "piece length": nominal_piece_length}} =
-  #     :persistent_term.get(lookup_name(info_hash))
+  def blocks_for_piece(info_hash, i, block_size) do
+    %{info: %{length: real_length, "piece length": nominal_piece_length}} =
+      :persistent_term.get(lookup_name(info_hash))
 
-  #   position = i * nominal_piece_length
+    number_of_pieces = ceil(real_length / nominal_piece_length)
 
-  #   number_of_pieces = ceil(real_length / nominal_piece_length)
+    is_last_piece? = i == number_of_pieces - 1
 
-  #   is_last_piece? = i == number_of_pieces - 1
+    real_piece_length =
+      if is_last_piece? do
+        nominal_length = number_of_pieces * nominal_piece_length
 
-  #   real_piece_length =
-  #     if is_last_piece? do
-  #       nominal_length = number_of_pieces * nominal_piece_length
+        delta = nominal_length - real_length
 
-  #       delta = nominal_length - real_length
+        last_piece_length = nominal_piece_length - delta
 
-  #       last_piece_length = nominal_piece_length - delta
+        last_piece_length
+      else
+        nominal_piece_length
+      end
 
-  #       last_piece_length
-  #     else
-  #       nominal_piece_length
-  #     end
-  # end
+    chunkify(real_piece_length, block_size)
+  end
+
+  @doc """
+  generically chunkify some length by some chunk size.
+  always returns at least 1 chunk, which can have a length less than chunk size.
+  """
+  def chunkify(thing_length, chunk_size) when thing_length > 0 and chunk_size > 0 do
+    number_of_chunks = ceil(thing_length / chunk_size)
+
+    Enum.reduce(
+      0..(number_of_chunks - 1),
+      {[], thing_length},
+      fn i, {chunks, remaining} ->
+        if chunk_size <= remaining do
+          {[{i * chunk_size, chunk_size} | chunks], remaining - chunk_size}
+        else
+          {[{i * chunk_size, remaining} | chunks], 0}
+        end
+      end
+    )
+    |> then(fn {chunks, 0} ->
+      Enum.reverse(chunks)
+    end)
+  end
 
   def piece_position_length_and_hash(info_hash, i) do
     %{info: %{pieces: piece_hashes, length: real_length, "piece length": nominal_piece_length}} =

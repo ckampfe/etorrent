@@ -289,12 +289,15 @@ defmodule Etorrent.TorrentWorker do
 
     # 1. pieces we want
     pieces_wanted =
-      piece_statuses
-      |> Stream.with_index()
-      |> Stream.filter(fn {have, _idx} ->
-        !have
-      end)
-      |> Stream.map(fn {_have, idx} -> idx end)
+      for <<i::1 <- piece_statuses>>, reduce: {[], 0} do
+        {wants, current_i} ->
+          if i == 0 do
+            {[current_i | wants], current_i + 1}
+          else
+            {wants, current_i + 1}
+          end
+      end
+      |> then(fn {wants, _} -> wants end)
       |> MapSet.new()
 
     # 2. pieces that aren't already requested
@@ -303,7 +306,10 @@ defmodule Etorrent.TorrentWorker do
     wanted_and_not_requested = MapSet.difference(pieces_wanted, requested_pieces)
 
     # 3. that are available
-    available_pieces = BiMultiMap.keys(peers_have_pieces)
+    available_pieces =
+      peers_have_pieces
+      |> BiMultiMap.keys()
+      |> MapSet.new()
 
     wanted_available_and_not_requested =
       MapSet.intersection(wanted_and_not_requested, available_pieces)
@@ -343,9 +349,15 @@ defmodule Etorrent.TorrentWorker do
     end
   end
 
-  def handle_info(:clear_old_requests, state) do
-    state = Map.put(state, :requests, BiMultiMap.new())
-    Logger.debug("cleared old requests")
+  def handle_info(:clear_old_requests, %State{} = state) do
+    state =
+      if BiMultiMap.size(state.requests) > 0 do
+        Logger.debug("cleared old requests")
+        Map.put(state, :requests, BiMultiMap.new())
+      else
+        Logger.debug("no old requests")
+        state
+      end
 
     Process.send_after(self(), :clear_old_requests, :timer.seconds(3))
 
@@ -353,6 +365,7 @@ defmodule Etorrent.TorrentWorker do
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+    # TODO send cancel messages to peers so they cancel their block requests
     state =
       state
       |> Map.update!(:peers_have_pieces, fn peers_have_pieces ->
