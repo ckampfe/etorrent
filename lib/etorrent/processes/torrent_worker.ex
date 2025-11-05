@@ -123,7 +123,7 @@ defmodule Etorrent.TorrentWorker do
     send(self(), :announce)
     send(self(), :tick)
 
-    Process.send_after(self(), :clear_old_requests, :timer.seconds(5))
+    Process.send_after(self(), :clear_old_requests, :timer.seconds(10))
 
     {:noreply, state}
   end
@@ -301,7 +301,10 @@ defmodule Etorrent.TorrentWorker do
       |> MapSet.new()
 
     # 2. pieces that aren't already requested
-    requested_pieces = BiMultiMap.values(requests) |> MapSet.new()
+    requested_pieces =
+      requests
+      |> BiMultiMap.values()
+      |> MapSet.new()
 
     wanted_and_not_requested = MapSet.difference(pieces_wanted, requested_pieces)
 
@@ -322,7 +325,7 @@ defmodule Etorrent.TorrentWorker do
       Process.send_after(self(), :tick, :timer.seconds(3))
       {:noreply, state}
     else
-      IO.inspect(pieces_to_request, label: "pieces to request")
+      Logger.debug("requesting pieces: #{inspect(pieces_to_request)}")
 
       requests =
         pieces_to_request
@@ -359,7 +362,7 @@ defmodule Etorrent.TorrentWorker do
         state
       end
 
-    Process.send_after(self(), :clear_old_requests, :timer.seconds(3))
+    Process.send_after(self(), :clear_old_requests, :timer.seconds(8))
 
     {:noreply, state}
   end
