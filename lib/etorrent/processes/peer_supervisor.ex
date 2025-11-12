@@ -35,7 +35,7 @@ defmodule Etorrent.PeerSupervisor do
     DynamicSupervisor.init(strategy: :one_for_one)
   end
 
-  def name(info_hash) do
+  defp name(info_hash) do
     {:via, Registry, {Etorrent.Registry, {__MODULE__, info_hash}}}
   end
 end

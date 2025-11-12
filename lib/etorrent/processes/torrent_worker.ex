@@ -16,6 +16,12 @@
 # - [ ] store interested/choked status on this TorrentWorker rather than in each process
 # - [ ] compute "left" amount being (length - have) to send to tracker
 # - [ ] connect to peers after we get them from announce, if we are leaching
+# - [ ] figure out interest/choke state:
+#       if peer has pieces we don't have, we are interested in it, otherwise not.
+#       if we are interested in peer and peer is not choking us: request from it
+#       if peer is interested in us and we are not choking it: allow it to request from us
+# - [ ] we need to tell peer connections to request blocks, not pieces,
+# -     have peer connections just be dumb and request what they're told
 
 defmodule Etorrent.TorrentWorker do
   use GenServer
@@ -40,6 +46,22 @@ defmodule Etorrent.TorrentWorker do
 
   def register_new_peer(info_hash, peer_pid, peer_id) do
     GenServer.call(name(info_hash), {:register_new_peer, peer_pid, peer_id})
+  end
+
+  def peer_choke(info_hash) do
+    GenServer.call(name(info_hash), :peer_choke)
+  end
+
+  def peer_unchoke(info_hash) do
+    GenServer.call(name(info_hash), :peer_unchoke)
+  end
+
+  def peer_interested(info_hash) do
+    GenServer.call(name(info_hash), :peer_interested)
+  end
+
+  def peer_not_interested(info_hash) do
+    GenServer.call(name(info_hash), :peer_not_interested)
   end
 
   def we_have_piece(info_hash, index) do
@@ -69,6 +91,14 @@ defmodule Etorrent.TorrentWorker do
       piece_statuses: <<>>,
       # mapping of `piece index` -> `peer pid`
       peers_have_pieces: BiMultiMap.new(),
+      # mapping of `peer_pid` -> `%{
+      #   interested_in_peer: bool,
+      #   choking_peer: bool,
+      #   peer_is_interested_in_us: bool,
+      #   peer_is_choking_us: bool
+      # }`
+      # peer_status[:interested_in_peer] && !peer_status[:peer_is_choking_us]
+      peer_statuses: %{},
       # `peer pid` -> `piece index`
       requests: BiMultiMap.new(),
       state: :started
@@ -95,6 +125,7 @@ defmodule Etorrent.TorrentWorker do
       port: 9000,
       piece_statuses: <<>>,
       peers_have_pieces: BiMultiMap.new(),
+      peer_statuses: %{},
       requests: BiMultiMap.new()
     }
 
@@ -137,6 +168,9 @@ defmodule Etorrent.TorrentWorker do
 
     PeerWorker.give_peer_id(peer_pid, peer_id, data_path)
 
+    state =
+      put_in(state, [:peer_statuses, peer_pid], %{interested_in_peer: false, choking_peer: true})
+
     {:reply, :ok, state}
   end
 
@@ -174,6 +208,26 @@ defmodule Etorrent.TorrentWorker do
     {:reply, {:ok, padded_bitfield}, state}
   end
 
+  def handle_call(:peer_choke, {peer_pid, _tag}, state) do
+    state = put_in(state, [:peer_statuses, peer_pid, :peer_is_choking_us], true)
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:peer_unchoke, {peer_pid, _tag}, state) do
+    state = put_in(state, [:peer_statuses, peer_pid, :peer_is_choking_us], false)
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:peer_interested, {peer_pid, _tag}, state) do
+    state = put_in(state, [:peer_statuses, peer_pid, :peer_is_interested_in_us], true)
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:peer_not_interested, {peer_pid, _tag}, state) do
+    state = put_in(state, [:peer_statuses, peer_pid, :peer_is_interested_in_us], false)
+    {:reply, :ok, state}
+  end
+
   def handle_call(
         {:we_have_piece, index},
         _from,
@@ -194,30 +248,58 @@ defmodule Etorrent.TorrentWorker do
     {:reply, :ok, state}
   end
 
-  def handle_call({:peer_have, index}, {peer_pid, _tag}, state) do
+  def handle_call(
+        {:peer_have, index},
+        {peer_pid, _tag},
+        %State{piece_statuses: piece_statuses} = state
+      ) do
     state =
-      Map.update!(state, :peers_have_pieces, fn mapping ->
-        BiMultiMap.put(mapping, index, peer_pid)
+      Map.update!(state, :peers_have_pieces, fn peers_have_pieces ->
+        BiMultiMap.put(peers_have_pieces, index, peer_pid)
       end)
+
+    # does peer have piece we don't have?
+    peer_haves =
+      state.peers_have_pieces
+      |> BiMultiMap.get_keys(peer_pid)
+      |> MapSet.new()
+
+    {wants, _} =
+      for <<piece::1 <- piece_statuses>>, reduce: {MapSet.new(), 0} do
+        {wants, i} ->
+          if piece == 0 do
+            {MapSet.put(wants, i), i + 1}
+          else
+            {wants, i + 1}
+          end
+      end
+
+    interested_in_peer? = !Enum.empty?(MapSet.intersection(wants, peer_haves))
+
+    previously_interested_in_peer? =
+      get_in(state, [:peer_statuses, peer_pid, :interested_in_peer])
+
+    state =
+      case {interested_in_peer?, previously_interested_in_peer?} do
+        {true, true} ->
+          state
+
+        {true, false} ->
+          PeerWorker.interested(peer_pid)
+          put_in(state, [:peer_statuses, peer_pid, :interested_in_peer], true)
+
+        {false, true} ->
+          PeerWorker.not_interested(peer_pid)
+          put_in(state, [:peer_statuses, peer_pid, :interested_in_peer], false)
+
+        {false, false} ->
+          state
+      end
 
     {:reply, :ok, state}
   end
 
   def handle_call({:peer_bitfield, bitfield}, {peer_pid, _tag} = _from, state) do
-    # what do we want?
-    #
-    # we want to be able to say, efficiently:
-    # - give me a peer that has this piece
-    # - peer has disconnected: remove all pieces from "available pieces" for peer
-    # - tell me a piece I don't have
-    # - peer now has this piece
-    #
-    # bitfield is 1's and 0's corresponding to piece indexes
-    #
-    # idx -> [peer]
-    #
-    # but how do you efficiently remove peer in the case of disconnection?
-    # you can't, it's linear in the number of indexes
     state =
       Map.update!(state, :peers_have_pieces, fn mapping ->
         for <<have::1 <- bitfield>>, reduce: {mapping, 0} do
@@ -275,12 +357,14 @@ defmodule Etorrent.TorrentWorker do
     {:noreply, state}
   end
 
+  # this would be so much better with a relational database!
   def handle_info(
         :tick,
-        %{
+        %State{
           piece_statuses: piece_statuses,
           requests: requests,
-          peers_have_pieces: peers_have_pieces
+          peers_have_pieces: peers_have_pieces,
+          peer_statuses: peer_statuses
         } = state
       ) do
     # is there still work to do?
@@ -308,11 +392,27 @@ defmodule Etorrent.TorrentWorker do
 
     wanted_and_not_requested = MapSet.difference(pieces_wanted, requested_pieces)
 
+    peers_were_interested_in_and_who_arent_choking_us =
+      peer_statuses
+      |> Enum.filter(fn {_peer_pid, peer_status} ->
+        peer_status[:interested_in_peer] && !peer_status[:peer_is_choking_us]
+      end)
+      |> Enum.map(fn {peer_pid, _} ->
+        peer_pid
+      end)
+      |> MapSet.new()
+
     # 3. that are available
     available_pieces =
       peers_have_pieces
-      |> BiMultiMap.keys()
+      |> Enum.filter(fn {_idx, peer_pid} ->
+        MapSet.member?(peers_were_interested_in_and_who_arent_choking_us, peer_pid)
+      end)
+      |> Enum.map(fn {idx, _peer_pid} -> idx end)
+      # |> BiMultiMap.keys()
       |> MapSet.new()
+
+    # 4. and we are interested in and not choking
 
     wanted_available_and_not_requested =
       MapSet.intersection(wanted_and_not_requested, available_pieces)
@@ -321,8 +421,8 @@ defmodule Etorrent.TorrentWorker do
 
     # TODO conditional to not do anything if no requests
     if Enum.empty?(pieces_to_request) do
-      Logger.debug("no pieces to request, doing nothing this tick")
-      Process.send_after(self(), :tick, :timer.seconds(3))
+      Logger.debug("have all pieces, doing nothing this tick and lengthening tick to 10s")
+      Process.send_after(self(), :tick, :timer.seconds(10))
       {:noreply, state}
     else
       Logger.debug("requesting pieces: #{inspect(pieces_to_request)}")
@@ -344,7 +444,7 @@ defmodule Etorrent.TorrentWorker do
         Logger.debug("asked peer #{inspect(peer)} to request piece #{idx}")
       end)
 
-      state = Map.put(state, :requests, requests)
+      state = %{state | requests: requests}
 
       Process.send_after(self(), :tick, :timer.seconds(1))
 
@@ -356,7 +456,7 @@ defmodule Etorrent.TorrentWorker do
     state =
       if BiMultiMap.size(state.requests) > 0 do
         Logger.debug("cleared old requests")
-        Map.put(state, :requests, BiMultiMap.new())
+        %{state | requests: BiMultiMap.new()}
       else
         Logger.debug("no old requests")
         state
@@ -376,6 +476,9 @@ defmodule Etorrent.TorrentWorker do
       end)
       |> Map.update!(:requests, fn requests ->
         BiMultiMap.delete(requests, pid)
+      end)
+      |> Map.update!(:peer_statuses, fn peer_statuses ->
+        Map.delete(peer_statuses, pid)
       end)
 
     {:noreply, state}

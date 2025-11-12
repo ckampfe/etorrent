@@ -37,7 +37,7 @@ defmodule Etorrent.AcceptorWorker do
         {:ok, %PeerProtocol.Handshake{info_hash: info_hash, peer_id: peer_id}} =
           PeerProtocol.decode_handshake(bytes)
 
-        Etorrent.add_incoming_peer_to_torrent(info_hash, peer_id, socket)
+        add_incoming_peer_to_torrent(info_hash, peer_id, socket)
 
         send(self(), :accept)
 
@@ -47,6 +47,21 @@ defmodule Etorrent.AcceptorWorker do
     end
 
     {:noreply, state}
+  end
+
+  # must be called from the acceptorworker process,
+  # gen_tcp.controlling_process/2 will error otherwise
+  defp add_incoming_peer_to_torrent(info_hash, peer_id, socket) do
+    # 1. add peer to peersupervisor
+    {:ok, peer_pid} =
+      PeerSupervisor.start_peer_for_incoming_connection(info_hash, peer_id, socket)
+
+    # 2. tell torrentworker about the peer, have it monitor the peer?
+    :ok = TorrentWorker.register_new_peer(info_hash, peer_pid, peer_id)
+    # 3. transfer the socket to the peer process
+    :ok = :gen_tcp.controlling_process(socket, peer_pid)
+
+    {:ok, info_hash}
   end
 
   defp id(i) do
