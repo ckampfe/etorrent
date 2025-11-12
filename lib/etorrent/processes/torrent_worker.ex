@@ -20,13 +20,15 @@
 #       if peer has pieces we don't have, we are interested in it, otherwise not.
 #       if we are interested in peer and peer is not choking us: request from it
 #       if peer is interested in us and we are not choking it: allow it to request from us
-# - [ ] we need to tell peer connections to request blocks, not pieces,
+# - [x] we need to tell peer connections to request blocks, not pieces,
 # -     have peer connections just be dumb and request what they're told
 
 defmodule Etorrent.TorrentWorker do
   use GenServer
   require Logger
   alias Etorrent.{Tracker, PeerWorker, DataFile, TorrentFile}
+
+  ### PUBLIC API ###
 
   def start_link([info_hash, _data_path] = args) do
     GenServer.start_link(__MODULE__, args, name: name(info_hash))
@@ -76,6 +78,8 @@ defmodule Etorrent.TorrentWorker do
     GenServer.call(name(info_hash), {:peer_bitfield, bitfield})
   end
 
+  ### END PUBLIC API ###
+
   ### CALLBACKS ###
 
   defmodule State do
@@ -101,7 +105,11 @@ defmodule Etorrent.TorrentWorker do
       peer_statuses: %{},
       # `peer pid` -> `piece index`
       requests: BiMultiMap.new(),
-      state: :started
+      # `peer pid` -> `{piece_index, begin, length}` (block)
+      inflight_requests: BiMultiMap.new(),
+      state: :started,
+      block_length: Application.compile_env(:etorrent, :block_length, 2 ** 15),
+      inflight_requests_target: Application.compile_env(:etorrent, :inflight_requests_target, 40)
     ]
   end
 
@@ -357,94 +365,33 @@ defmodule Etorrent.TorrentWorker do
     {:noreply, state}
   end
 
+  # defp get_(remaining_wanted_pieces, inflight_request_set) do
+  # end
+
   # this would be so much better with a relational database!
   def handle_info(
         :tick,
         %State{
-          piece_statuses: piece_statuses,
-          requests: requests,
-          peers_have_pieces: peers_have_pieces,
-          peer_statuses: peer_statuses
+          inflight_requests: inflight_requests
         } = state
       ) do
-    # is there still work to do?
-    # if so, schedule it
-    # if not, do nothing
+    blocks_to_request = get_blocks_to_request(state)
 
-    # 1. pieces we want
-    pieces_wanted =
-      for <<i::1 <- piece_statuses>>, reduce: {[], 0} do
-        {wants, current_i} ->
-          if i == 0 do
-            {[current_i | wants], current_i + 1}
-          else
-            {wants, current_i + 1}
-          end
-      end
-      |> then(fn {wants, _} -> wants end)
-      |> MapSet.new()
-
-    # 2. pieces that aren't already requested
-    requested_pieces =
-      requests
-      |> BiMultiMap.values()
-      |> MapSet.new()
-
-    wanted_and_not_requested = MapSet.difference(pieces_wanted, requested_pieces)
-
-    peers_were_interested_in_and_who_arent_choking_us =
-      peer_statuses
-      |> Enum.filter(fn {_peer_pid, peer_status} ->
-        peer_status[:interested_in_peer] && !peer_status[:peer_is_choking_us]
-      end)
-      |> Enum.map(fn {peer_pid, _} ->
-        peer_pid
-      end)
-      |> MapSet.new()
-
-    # 3. that are available
-    available_pieces =
-      peers_have_pieces
-      |> Enum.filter(fn {_idx, peer_pid} ->
-        MapSet.member?(peers_were_interested_in_and_who_arent_choking_us, peer_pid)
-      end)
-      |> Enum.map(fn {idx, _peer_pid} -> idx end)
-      # |> BiMultiMap.keys()
-      |> MapSet.new()
-
-    # 4. and we are interested in and not choking
-
-    wanted_available_and_not_requested =
-      MapSet.intersection(wanted_and_not_requested, available_pieces)
-
-    pieces_to_request = Enum.take(wanted_available_and_not_requested, 5)
-
-    # TODO conditional to not do anything if no requests
-    if Enum.empty?(pieces_to_request) do
-      Logger.debug("have all pieces, doing nothing this tick and lengthening tick to 10s")
-      Process.send_after(self(), :tick, :timer.seconds(10))
+    if Enum.empty?(blocks_to_request) do
       {:noreply, state}
     else
-      Logger.debug("requesting pieces: #{inspect(pieces_to_request)}")
+      Enum.each(blocks_to_request, fn {piece_index, begin, length} ->
+        random_peer =
+          piece_index
+          |> BiMultiMap.get(piece_index)
+          |> Enum.random()
 
-      requests =
-        pieces_to_request
-        |> Enum.map(fn idx ->
-          peer =
-            peers_have_pieces
-            |> BiMultiMap.get(idx)
-            |> Enum.random()
+        PeerWorker.request_block(random_peer, piece_index, begin, length)
 
-          {peer, idx}
-        end)
-        |> BiMultiMap.new()
-
-      Enum.each(requests, fn {peer, idx} ->
-        PeerWorker.request_piece(peer, idx)
-        Logger.debug("asked peer #{inspect(peer)} to request piece #{idx}")
+        Logger.debug("asked peer #{inspect(random_peer)} to request piece #{piece_index}")
       end)
 
-      state = %{state | requests: requests}
+      state = %{state | inflight_requests: inflight_requests}
 
       Process.send_after(self(), :tick, :timer.seconds(1))
 
@@ -462,24 +409,19 @@ defmodule Etorrent.TorrentWorker do
         state
       end
 
-    Process.send_after(self(), :clear_old_requests, :timer.seconds(8))
+    Process.send_after(self(), :clear_old_requests, :timer.seconds(10))
 
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, %State{} = state) do
     # TODO send cancel messages to peers so they cancel their block requests
-    state =
+    state = %{
       state
-      |> Map.update!(:peers_have_pieces, fn peers_have_pieces ->
-        BiMultiMap.delete_value(peers_have_pieces, pid)
-      end)
-      |> Map.update!(:requests, fn requests ->
-        BiMultiMap.delete(requests, pid)
-      end)
-      |> Map.update!(:peer_statuses, fn peer_statuses ->
-        Map.delete(peer_statuses, pid)
-      end)
+      | peers_have_pieces: BiMultiMap.delete_value(state.peers_have_pieces, pid),
+        inflight_requests: BiMultiMap.delete(state.inflight_requests, pid),
+        peer_statuses: Map.delete(state.peer_statuses, pid)
+    }
 
     {:noreply, state}
   end
@@ -492,6 +434,128 @@ defmodule Etorrent.TorrentWorker do
   end
 
   ### PRIVATE ###
+
+  def get_blocks_to_request(%{
+        info_hash: info_hash,
+        # unpadded bitstring
+        piece_statuses: piece_statuses,
+        # mapping of `piece index` -> `peer pid`
+        peers_have_pieces: peers_have_pieces,
+        # mapping of `pid ->
+        # %{
+        #   interested_in_peer: bool,
+        #   choking_peer: bool,
+        #   peer_is_interested_in_us: bool,
+        #   peer_is_choking_us: bool
+        # }`
+        peer_statuses: peer_statuses,
+        # `peer_pid -> {piece_index, block_begin, block_length}`
+        inflight_requests: inflight_requests,
+        # integer nominal block length
+        block_length: block_length,
+        # the max number of active block requests to have at any given time
+        inflight_requests_target: inflight_requests_target
+      }) do
+    all_wanted_pieces =
+      piece_statuses |> get_zeroes_indexes() |> MapSet.new()
+
+    # - get all wanted pieces
+    # - work through all pieces that peers `have`
+    #   to get blocks from those pieces until we get a target number of blocks
+    #   or exhaust all wanted pieces
+    #
+    #
+    # for a given wanted piece that peers have
+    # get its blocks
+    # if those blocks are already requests_inflight, skip
+    # if not, add to list
+    # repeat until we reach target number of blocks or exhaust pieces
+
+    peers_that_arent_choking_us =
+      peer_statuses
+      |> Enum.filter(fn
+        {_peer_pid, %{peer_is_choking_us: false}} ->
+          true
+
+        _ ->
+          false
+      end)
+      |> Enum.map(fn {peer_pid, _peer_status} -> peer_pid end)
+      |> MapSet.new()
+
+    pieces_peers_have_in_rarity_order =
+      peers_have_pieces
+      # %{piece_index => [peer_pid]}
+      |> Enum.filter(fn {_piece_index, peer_pid} ->
+        MapSet.member?(peers_that_arent_choking_us, peer_pid)
+      end)
+      |> Enum.group_by(
+        fn {piece_index, _peer} -> piece_index end,
+        fn {_piece_index, peer} -> peer end
+      )
+      # %{piece_index => integer}
+      |> Enum.sort_by(fn {_piece_index, peers_that_have_this_piece} ->
+        Enum.count(peers_that_have_this_piece)
+      end)
+      # %{piece_index => integer}
+      |> Enum.filter(fn {_piece_index, number_of_peers_that_have_this_piece} ->
+        number_of_peers_that_have_this_piece > 0
+      end)
+      # [integer]
+      |> Enum.map(fn {piece_index, _number_of_peers_that_have_this_piece} ->
+        piece_index
+      end)
+
+    wanted_pieces_peers_have =
+      pieces_peers_have_in_rarity_order
+      |> Enum.filter(fn piece_index ->
+        MapSet.member?(all_wanted_pieces, piece_index)
+      end)
+
+    inflight_requests_set =
+      inflight_requests
+      |> BiMultiMap.values()
+      |> MapSet.new()
+
+    wanted_number_of_new_blocks =
+      max(0, inflight_requests_target - Enum.count(inflight_requests))
+
+    Enum.reduce_while(wanted_pieces_peers_have, MapSet.new(), fn piece_index, acc ->
+      prospective_blocks_to_request_count = Enum.count(acc)
+
+      if prospective_blocks_to_request_count >= wanted_number_of_new_blocks do
+        {:halt, acc}
+      else
+        wanted_blocks =
+          TorrentFile.blocks_for_piece(info_hash, piece_index, block_length)
+          |> Enum.map(fn {begin, length} -> {piece_index, begin, length} end)
+          |> MapSet.new()
+          |> MapSet.difference(inflight_requests_set)
+
+        delta = wanted_number_of_new_blocks - prospective_blocks_to_request_count
+
+        blocks_to_add =
+          wanted_blocks
+          |> Enum.sort_by(fn {_piece_index, begin, _length} -> begin end)
+          |> Enum.take(delta)
+          |> MapSet.new()
+
+        {:cont, MapSet.union(acc, blocks_to_add)}
+      end
+    end)
+  end
+
+  def get_zeroes_indexes(bits) when is_bitstring(bits) do
+    for <<bit::1 <- bits>>, reduce: {[], 0} do
+      {zeroes, current_index} ->
+        if bit == 0 do
+          {[current_index | zeroes], current_index + 1}
+        else
+          {zeroes, current_index + 1}
+        end
+    end
+    |> then(fn {zeroes, _} -> zeroes end)
+  end
 
   defp name(info_hash) do
     {:via, Registry, {Etorrent.Registry, {__MODULE__, info_hash}}}

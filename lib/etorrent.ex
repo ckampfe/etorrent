@@ -8,7 +8,6 @@ defmodule Etorrent do
   """
   alias Etorrent.{
     TorrentWorker,
-    PeerSupervisor,
     TorrentsSupervisor,
     Repo,
     Torrent,

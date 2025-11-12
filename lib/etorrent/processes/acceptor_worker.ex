@@ -1,7 +1,7 @@
 defmodule Etorrent.AcceptorWorker do
   use GenServer
   require Logger
-  alias Etorrent.{ListenerWorker, PeerProtocol}
+  alias Etorrent.{ListenerWorker, PeerProtocol, PeerSupervisor, TorrentWorker}
 
   def child_spec(init_arg) do
     %{

@@ -9,7 +9,7 @@
 - [ ] torrent save current state to disk
 - [ ] torrent announce to tracker
 - [ ] torrent figure out in-memory peer data schema
-- [ ] centralize info_hash calculation
+- [x] centralize info_hash calculation
 - [ ] define config schema
 - [ ] save config to disk
 - [ ] ui to view and change config
@@ -20,3 +20,4 @@
 - [x] acceptor pool
 - [x] acceptor hand off to peer_worker
 - [ ] auth
+- [x] block requests, make peer dumber

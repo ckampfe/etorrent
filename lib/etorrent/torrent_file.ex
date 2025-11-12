@@ -82,13 +82,13 @@ defmodule Etorrent.TorrentFile do
     {:ok, Enum.reverse(out)}
   end
 
-  def blocks_for_piece(info_hash, i, block_size) do
+  def blocks_for_piece(info_hash, piece_index, block_size) do
     %{info: %{length: real_length, "piece length": nominal_piece_length}} =
       :persistent_term.get(lookup_name(info_hash))
 
     number_of_pieces = ceil(real_length / nominal_piece_length)
 
-    is_last_piece? = i == number_of_pieces - 1
+    is_last_piece? = piece_index == number_of_pieces - 1
 
     real_piece_length =
       if is_last_piece? do

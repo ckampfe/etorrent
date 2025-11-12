@@ -1,12 +1,12 @@
 # TODO
 #
-# - [ ] figure out socket send timeouts
-# - [ ] figure out interest/choke state
+# - [x] figure out socket send timeouts
+# - [x] figure out interest/choke state
 
 defmodule Etorrent.PeerWorker do
   use GenServer, restart: :temporary
   require Logger
-  alias Etorrent.{PeerProtocol, TorrentWorker, DataFile, TorrentFile}
+  alias Etorrent.{PeerProtocol, TorrentWorker, DataFile}
 
   def start_link_incoming_connection(args) do
     GenServer.start_link(__MODULE__, {:incoming, args})
@@ -16,8 +16,8 @@ defmodule Etorrent.PeerWorker do
     GenServer.start_link(__MODULE__, {:outoing, args})
   end
 
-  def request_piece(server, idx) do
-    GenServer.call(server, {:request_piece, idx})
+  def request_block(server, piece_index, begin, block_length) do
+    GenServer.call(server, {:request_block, piece_index, begin, block_length})
   end
 
   def we_have_piece(server, idx) do
@@ -65,8 +65,7 @@ defmodule Etorrent.PeerWorker do
       :remote_peer_id,
       :host,
       :port,
-      :name,
-      block_size: 2 ** 15
+      :name
     ]
   end
 
@@ -109,20 +108,14 @@ defmodule Etorrent.PeerWorker do
   end
 
   def handle_call(
-        {:request_piece, piece_idx},
+        {:request_block, piece_index, begin, length},
         _from,
-        %State{socket: socket, info_hash: info_hash, block_size: block_size} = state
+        %State{socket: socket} = state
       ) do
-    Logger.debug("peer #{inspect(self())} requesting piece #{piece_idx}")
+    encoded_request =
+      PeerProtocol.encode(%PeerProtocol.Request{index: piece_index, begin: begin, length: length})
 
-    blocks_for_piece = TorrentFile.blocks_for_piece(info_hash, piece_idx, block_size)
-
-    Enum.each(blocks_for_piece, fn {begin, length} ->
-      encoded_request =
-        PeerProtocol.encode(%PeerProtocol.Request{index: piece_idx, begin: begin, length: length})
-
-      :ok = :gen_tcp.send(socket, encoded_request)
-    end)
+    :ok = :gen_tcp.send(socket, encoded_request)
 
     {:reply, :ok, state}
   end
