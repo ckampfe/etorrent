@@ -36,7 +36,7 @@ defmodule Etorrent.AcceptorWorker do
   def handle_info(:accept, %State{listen_socket: listen_socket} = state) do
     {:ok, socket} = :gen_tcp.accept(listen_socket)
 
-    case :gen_tcp.recv(socket, 0) do
+    case :gen_tcp.recv(socket, 1 + 19 + 8 + 20 + 20, :timer.seconds(5)) do
       {:ok, bytes} ->
         {:ok, %PeerProtocol.Handshake{info_hash: info_hash, peer_id: peer_id}} =
           PeerProtocol.decode_handshake(bytes)
