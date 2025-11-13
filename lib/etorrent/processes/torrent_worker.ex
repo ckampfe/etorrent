@@ -109,7 +109,8 @@ defmodule Etorrent.TorrentWorker do
       inflight_requests: BiMultiMap.new(),
       state: :started,
       block_length: Application.compile_env(:etorrent, :block_length, 2 ** 15),
-      inflight_requests_target: Application.compile_env(:etorrent, :inflight_requests_target, 40)
+      inflight_requests_target: Application.compile_env(:etorrent, :inflight_requests_target, 40),
+      maximum_uploads: Application.compile_env(:etorrent, :maximum_uploads, 4)
     ]
   end
 
@@ -160,7 +161,8 @@ defmodule Etorrent.TorrentWorker do
     state = %{state | piece_statuses: piece_statuses}
 
     send(self(), :announce)
-    send(self(), :tick)
+    send(self(), :request_tick)
+    send(self(), :unchoke_tick)
 
     Process.send_after(self(), :clear_old_requests, :timer.seconds(10))
 
@@ -320,7 +322,7 @@ defmodule Etorrent.TorrentWorker do
         end
       end)
 
-    Process.send_after(self(), :tick, 100)
+    Process.send_after(self(), :request_tick, 100)
 
     {:reply, :ok, state}
   end
@@ -350,6 +352,10 @@ defmodule Etorrent.TorrentWorker do
               end)
             end)
 
+          # TODO
+          # connect to unconnected peers up to the limit,
+          # create peer_statuses for them
+
           Process.send_after(self(), :announce, :timer.seconds(announce_response[:interval]))
 
           announce_response
@@ -370,7 +376,7 @@ defmodule Etorrent.TorrentWorker do
 
   # this would be so much better with a relational database!
   def handle_info(
-        :tick,
+        :request_tick,
         %State{
           inflight_requests: inflight_requests
         } = state
@@ -393,10 +399,33 @@ defmodule Etorrent.TorrentWorker do
 
       state = %{state | inflight_requests: inflight_requests}
 
-      Process.send_after(self(), :tick, :timer.seconds(1))
+      Process.send_after(self(), :request_tick, :timer.seconds(1))
 
       {:noreply, state}
     end
+  end
+
+  # TODO do something smarter here like tracking upload and download rate
+  # and reciprocating to peers that allow us to leach.
+  #
+  # for now, just randomly choke and unchoke peers
+  def handle_info(
+        :unchoke_tick,
+        %State{maximum_uploads: maximum_uploads, peer_statuses: peer_statuses} = state
+      ) do
+    # mapping of `peer_pid` -> `%{
+    #   interested_in_peer: bool,
+    #   choking_peer: bool,
+    #   peer_is_interested_in_us: bool,
+    #   peer_is_choking_us: bool
+    # }`
+    peer_statuses = choke_and_unchoke_peers(peer_statuses, maximum_uploads)
+
+    state = %{state | peer_statuses: peer_statuses}
+
+    Process.send_after(self(), :unchoke_tick, :timer.seconds(10))
+
+    {:noreply, state}
   end
 
   def handle_info(:clear_old_requests, %State{} = state) do
@@ -434,6 +463,54 @@ defmodule Etorrent.TorrentWorker do
   end
 
   ### PRIVATE ###
+
+  def choke_and_unchoke_peers(peer_statuses, maximum_uploads) do
+    if Enum.count(peer_statuses) <= maximum_uploads do
+      Enum.reduce(peer_statuses, peer_statuses, fn
+        {peer_pid, %{choking_peer: true}}, acc ->
+          PeerWorker.unchoke(peer_pid)
+
+          Map.update!(acc, peer_pid, fn peer_status ->
+            %{peer_status | choking_peer: false}
+          end)
+
+        {_peer_pid, %{choking_peer: false}}, acc ->
+          acc
+      end)
+      |> Enum.into(%{})
+    else
+      choked_and_unchoked_peers =
+        Enum.group_by(
+          peer_statuses,
+          fn {_peer_pid, peer_status} ->
+            if peer_status[:choking_peer] do
+              :choked
+            else
+              :unchoked
+            end
+          end
+        )
+
+      choked_peers = Map.get(choked_and_unchoked_peers, :choked, [])
+      unchoked_peers = Map.get(choked_and_unchoked_peers, :unchoked, [])
+
+      peer_statuses =
+        Enum.reduce(unchoked_peers, peer_statuses, fn {peer_pid, _peer_status}, acc ->
+          PeerWorker.choke(peer_pid)
+          put_in(acc, [peer_pid, :choking_peer], true)
+        end)
+
+      peer_statuses =
+        choked_peers
+        |> Enum.take(maximum_uploads)
+        |> Enum.reduce(peer_statuses, fn {peer_pid, _peer_status}, acc ->
+          PeerWorker.unchoke(peer_pid)
+          put_in(acc, [peer_pid, :choking_peer], false)
+        end)
+
+      peer_statuses
+    end
+  end
 
   def get_blocks_to_request(%{
         info_hash: info_hash,

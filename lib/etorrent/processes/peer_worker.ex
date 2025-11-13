@@ -20,24 +20,24 @@ defmodule Etorrent.PeerWorker do
     GenServer.call(server, {:request_block, piece_index, begin, block_length})
   end
 
-  def we_have_piece(server, idx) do
-    GenServer.cast(server, {:we_have_piece, idx})
+  def we_have_piece(server, piece_index) do
+    GenServer.cast(server, {:we_have_piece, piece_index})
   end
 
   def interested(server) do
-    GenServer.call(server, :interested)
+    GenServer.cast(server, :interested)
   end
 
   def not_interested(server) do
-    GenServer.call(server, :not_interested)
+    GenServer.cast(server, :not_interested)
   end
 
   def choke(server) do
-    GenServer.call(server, :choke)
+    GenServer.cast(server, :choke)
   end
 
   def unchoke(server) do
-    GenServer.call(server, :unchoke)
+    GenServer.cast(server, :unchoke)
   end
 
   # def init({:incoming, args}) do
@@ -120,30 +120,6 @@ defmodule Etorrent.PeerWorker do
     {:reply, :ok, state}
   end
 
-  def handle_call(:interested, _from, %State{socket: socket} = state) do
-    encoded_interested = PeerProtocol.encode(%PeerProtocol.Interested{})
-    :ok = :gen_tcp.send(socket, encoded_interested)
-    {:reply, :ok, state}
-  end
-
-  def handle_call(:not_interested, _from, %State{socket: socket} = state) do
-    encoded_not_interested = PeerProtocol.encode(%PeerProtocol.NotInterested{})
-    :ok = :gen_tcp.send(socket, encoded_not_interested)
-    {:reply, :ok, state}
-  end
-
-  def handle_call(:choke, _from, %State{socket: socket} = state) do
-    encoded_choke = PeerProtocol.encode(%PeerProtocol.Choke{})
-    :ok = :gen_tcp.send(socket, encoded_choke)
-    {:reply, :ok, state}
-  end
-
-  def handle_call(:unchoke, _from, %State{socket: socket} = state) do
-    encoded_unchoke = PeerProtocol.encode(%PeerProtocol.Unchoke{})
-    :ok = :gen_tcp.send(socket, encoded_unchoke)
-    {:reply, :ok, state}
-  end
-
   def handle_continue(
         :reply_with_handshake,
         %{info_hash: info_hash, peer_id: peer_id, socket: socket} = state
@@ -216,6 +192,30 @@ defmodule Etorrent.PeerWorker do
   def handle_cast({:we_have_piece, idx}, %State{socket: socket} = state) do
     encoded_have = PeerProtocol.encode(%PeerProtocol.Have{index: idx})
     :ok = :gen_tcp.send(socket, encoded_have)
+    {:noreply, state}
+  end
+
+  def handle_cast(:choke, %State{socket: socket} = state) do
+    encoded_choke = PeerProtocol.encode(%PeerProtocol.Choke{})
+    :ok = :gen_tcp.send(socket, encoded_choke)
+    {:noreply, state}
+  end
+
+  def handle_cast(:unchoke, %State{socket: socket} = state) do
+    encoded_unchoke = PeerProtocol.encode(%PeerProtocol.Unchoke{})
+    :ok = :gen_tcp.send(socket, encoded_unchoke)
+    {:noreply, state}
+  end
+
+  def handle_cast(:interested, %State{socket: socket} = state) do
+    encoded_interested = PeerProtocol.encode(%PeerProtocol.Interested{})
+    :ok = :gen_tcp.send(socket, encoded_interested)
+    {:noreply, state}
+  end
+
+  def handle_cast(:not_interested, %State{socket: socket} = state) do
+    encoded_not_interested = PeerProtocol.encode(%PeerProtocol.NotInterested{})
+    :ok = :gen_tcp.send(socket, encoded_not_interested)
     {:noreply, state}
   end
 

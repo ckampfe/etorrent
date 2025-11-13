@@ -20,6 +20,169 @@ defmodule Etorrent.TorrentWorkerTest do
     assert [4, 3, 2, 1, 0] == TorrentWorker.get_zeroes_indexes(<<0::1, 0::1, 0::1, 0::1, 0::1>>)
   end
 
+  describe "choke_and_unchoke_peers/2" do
+    test "unchokes up to limit when all peers are choked" do
+      old_peers =
+        %{
+          a: %{choking_peer: true},
+          b: %{choking_peer: true},
+          c: %{choking_peer: true},
+          d: %{choking_peer: true},
+          e: %{choking_peer: true},
+          f: %{choking_peer: true},
+          g: %{choking_peer: true}
+        }
+
+      new_peers =
+        TorrentWorker.choke_and_unchoke_peers(
+          old_peers,
+          3
+        )
+
+      unchoked_peers_count =
+        new_peers
+        |> Enum.filter(fn
+          {_peer_pid, %{choking_peer: false}} -> true
+          _ -> false
+        end)
+        |> Enum.count()
+
+      choked_peers_count =
+        new_peers
+        |> Enum.filter(fn
+          {_peer_pid, %{choking_peer: true}} -> true
+          _ -> false
+        end)
+        |> Enum.count()
+
+      assert Enum.count(new_peers) == Enum.count(old_peers)
+      assert unchoked_peers_count == 3
+      assert choked_peers_count == Enum.count(old_peers) - unchoked_peers_count
+    end
+
+    test "with existing choked peers equal to maximum_uploads" do
+      old_peers =
+        %{
+          a: %{choking_peer: true},
+          b: %{choking_peer: true},
+          c: %{choking_peer: true},
+          d: %{choking_peer: true},
+          e: %{choking_peer: false},
+          f: %{choking_peer: false},
+          g: %{choking_peer: false}
+        }
+
+      previously_unchoked = MapSet.new([:e, :f, :g])
+
+      new_peers =
+        TorrentWorker.choke_and_unchoke_peers(
+          old_peers,
+          3
+        )
+
+      unchoked_peers =
+        new_peers
+        |> Enum.filter(fn
+          {_peer_pid, %{choking_peer: false}} -> true
+          _ -> false
+        end)
+
+      choked_peers =
+        new_peers
+        |> Enum.filter(fn
+          {_peer_pid, %{choking_peer: true}} -> true
+          _ -> false
+        end)
+        |> Enum.into(%{})
+
+      assert Enum.count(new_peers) == Enum.count(old_peers)
+      assert Enum.count(unchoked_peers) == 3
+      assert Enum.count(choked_peers) == Enum.count(old_peers) - Enum.count(unchoked_peers)
+
+      Enum.each(previously_unchoked, fn peer_pid ->
+        assert MapSet.member?(MapSet.new(Map.keys(choked_peers)), peer_pid)
+      end)
+    end
+
+    test "all currently unchoked remain unchoked if == maximum_uploads" do
+      old_peers =
+        %{
+          a: %{choking_peer: false},
+          b: %{choking_peer: false},
+          c: %{choking_peer: false},
+          d: %{choking_peer: false},
+          e: %{choking_peer: false},
+          f: %{choking_peer: false},
+          g: %{choking_peer: false}
+        }
+
+      new_peers =
+        TorrentWorker.choke_and_unchoke_peers(
+          old_peers,
+          7
+        )
+
+      unchoked_peers_count =
+        new_peers
+        |> Enum.filter(fn
+          {_peer_pid, %{choking_peer: false}} -> true
+          _ -> false
+        end)
+        |> Enum.count()
+
+      choked_peers_count =
+        new_peers
+        |> Enum.filter(fn
+          {_peer_pid, %{choking_peer: true}} -> true
+          _ -> false
+        end)
+        |> Enum.count()
+
+      assert Enum.count(new_peers) == Enum.count(old_peers)
+      assert unchoked_peers_count == 7
+      assert choked_peers_count == 0
+    end
+
+    test "all currently unchoked remain unchoked if < maximum_uploads" do
+      old_peers =
+        %{
+          a: %{choking_peer: false},
+          b: %{choking_peer: false},
+          c: %{choking_peer: false},
+          d: %{choking_peer: false},
+          e: %{choking_peer: false},
+          f: %{choking_peer: false},
+          g: %{choking_peer: false}
+        }
+
+      new_peers =
+        TorrentWorker.choke_and_unchoke_peers(
+          old_peers,
+          700
+        )
+
+      unchoked_peers_count =
+        new_peers
+        |> Enum.filter(fn
+          {_peer_pid, %{choking_peer: false}} -> true
+          _ -> false
+        end)
+        |> Enum.count()
+
+      choked_peers_count =
+        new_peers
+        |> Enum.filter(fn
+          {_peer_pid, %{choking_peer: true}} -> true
+          _ -> false
+        end)
+        |> Enum.count()
+
+      assert Enum.count(new_peers) == Enum.count(old_peers)
+      assert unchoked_peers_count == 7
+      assert choked_peers_count == 0
+    end
+  end
+
   describe "get_blocks_to_request/1" do
     test "returns no blocks if we have all pieces", %{info_hash: info_hash} do
       assert MapSet.new([]) ==
