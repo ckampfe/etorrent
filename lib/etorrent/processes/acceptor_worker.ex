@@ -3,6 +3,10 @@ defmodule Etorrent.AcceptorWorker do
   require Logger
   alias Etorrent.{ListenerWorker, PeerProtocol, PeerSupervisor, TorrentWorker}
 
+  defmodule State do
+    defstruct [:listen_socket, :i]
+  end
+
   def child_spec(init_arg) do
     %{
       id: id(init_arg),
@@ -14,23 +18,23 @@ defmodule Etorrent.AcceptorWorker do
     GenServer.start_link(__MODULE__, args, name: id(args[:i]))
   end
 
-  def init(args) do
+  def init(%{i: i} = args) do
     Logger.debug("acceptor args #{inspect(args)}")
-    {:ok, args, {:continue, :fetch_listen_socket}}
+    {:ok, %State{i: i}, {:continue, :fetch_listen_socket}}
   end
 
-  def handle_continue(:fetch_listen_socket, state) do
-    listen_socket = ListenerWorker.get_listen_socket()
+  def handle_continue(:fetch_listen_socket, %State{} = state) do
+    {:ok, listen_socket} = ListenerWorker.get_listen_socket()
 
-    state = Map.put(state, :listen_socket, listen_socket)
+    state = %{state | listen_socket: listen_socket}
 
     send(self(), :accept)
 
     {:noreply, state}
   end
 
-  def handle_info(:accept, state) do
-    {:ok, socket} = :gen_tcp.accept(state[:listen_socket])
+  def handle_info(:accept, %State{listen_socket: listen_socket} = state) do
+    {:ok, socket} = :gen_tcp.accept(listen_socket)
 
     case :gen_tcp.recv(socket, 0) do
       {:ok, bytes} ->
