@@ -82,6 +82,8 @@ defmodule Etorrent.PeerWorker do
 
     Logger.debug("outgoing peer worker started")
 
+    Process.send_after(self(), :keepalive, :timer.minutes(1))
+
     case mode do
       :incoming ->
         {:ok, state, {:continue, :reply_with_handshake}}
@@ -219,6 +221,13 @@ defmodule Etorrent.PeerWorker do
     {:noreply, state}
   end
 
+  def handle_info(:keepalive, %State{socket: socket} = state) do
+    encoded_keepalive = PeerProtocol.encode(%PeerProtocol.KeepAlive{})
+    :ok = :gen_tcp.send(socket, encoded_keepalive)
+    Process.send_after(self(), :keepalive, :timer.minutes(1))
+    {:noreply, state}
+  end
+
   def handle_info(
         {:tcp, _socket, data},
         %State{info_hash: info_hash, socket: socket, data_file: data_file} = state
@@ -257,10 +266,18 @@ defmodule Etorrent.PeerWorker do
           TorrentWorker.peer_bitfield(info_hash, bitfield)
           {:noreply, state}
 
-        %PeerProtocol.Request{index: index, begin: begin, length: length} ->
-          Logger.debug("peer request #{index} #{begin} #{length}")
-          raise "todo"
+        %PeerProtocol.Request{index: index, begin: block_begin, length: block_length} ->
+          Logger.debug("peer request #{index} #{block_begin} #{block_length}")
 
+          :ok =
+            DataFile.send_piece(info_hash, data_file, index, block_begin, block_length, socket)
+
+          TorrentWorker.peer_sent_block(info_hash, block_length)
+
+          {:noreply, state}
+
+        # TODO what should we actually do here after writing the data to disk?
+        # should we handle verification here, or in the TorrentWorker?
         %PeerProtocol.Piece{index: index, begin: begin, block: _chunk} = piece_message ->
           Logger.debug("received peer piece message #{index} #{begin} block")
 
@@ -277,7 +294,10 @@ defmodule Etorrent.PeerWorker do
 
         %PeerProtocol.Cancel{index: index, begin: begin, length: length} ->
           Logger.debug("peer cancel #{index} #{begin} #{length}")
-          raise "todo"
+          # TODO
+          # actually do something in response to Cancel messages?
+          # does it matter?
+          {:noreply, state}
 
         %PeerProtocol.Handshake{info_hash: remote_info_hash, peer_id: _remote_peer_id} ->
           if remote_info_hash == info_hash do
@@ -300,7 +320,7 @@ defmodule Etorrent.PeerWorker do
 
   def handle_info({:tcp_closed, _socket}, state) do
     Logger.debug("socket closed")
-    {:noreply, state}
+    {:stop, :normal, state}
   end
 
   defp set_post_handshake_socket_mode(socket) do

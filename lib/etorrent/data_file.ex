@@ -74,6 +74,16 @@ defmodule Etorrent.DataFile do
     end
   end
 
+  def send_piece(info_hash, data_file, piece_index, begin, block_length, socket) do
+    with {:ok, %{position: piece_position, length: _length, hash: _expected_hash}} <-
+           TorrentFile.piece_position_length_and_hash(info_hash, piece_index),
+         block_position = piece_position + begin,
+         {:ok, ^block_length} <-
+           :file.sendfile(data_file, socket, block_position, block_length, []) do
+      :ok
+    end
+  end
+
   def verify_piece(info_hash, data_file, i) do
     with {:ok, %{position: position, length: length, hash: expected_hash}} <-
            TorrentFile.piece_position_length_and_hash(info_hash, i),

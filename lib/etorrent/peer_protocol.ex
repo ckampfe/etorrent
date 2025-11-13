@@ -1,4 +1,14 @@
 defmodule Etorrent.PeerProtocol do
+  @moduledoc """
+  All datatypes in this module assume
+  that we are using :gen_tcp with options `:binary` and `{:packet, 4}`,
+  so Erlang automatically calculates the length header
+  """
+
+  defmodule KeepAlive do
+    defstruct []
+  end
+
   defmodule Choke do
     defstruct []
   end
@@ -49,6 +59,7 @@ defmodule Etorrent.PeerProtocol do
     ]
   end
 
+  # TODO at some point decode the features binary
   def decode_handshake(
         <<19, "BitTorrent protocol", _reserved::binary-size(8), info_hash::binary-size(20),
           peer_id::binary-size(20)>>
@@ -58,29 +69,29 @@ defmodule Etorrent.PeerProtocol do
 
   def encode(m) do
     case m do
+      %KeepAlive{} ->
+        <<>>
+
       %Choke{} ->
-        <<0, 0, 0, 1, 0>>
+        <<0>>
 
       %Unchoke{} ->
-        <<0, 0, 0, 1, 1>>
+        <<1>>
 
       %Interested{} ->
-        <<0, 0, 0, 1, 2>>
+        <<2>>
 
       %NotInterested{} ->
-        <<0, 0, 0, 1, 3>>
+        <<3>>
 
       %Have{index: index} ->
-        [encode_integer(5), <<4>>, encode_integer(index)]
+        [<<4>>, encode_integer(index)]
 
       %Bitfield{bitfield: bitfield} ->
-        length = 1 + byte_size(bitfield)
-
-        [encode_integer(length), <<5>>, bitfield]
+        [<<5>>, bitfield]
 
       %Request{index: index, begin: begin, length: length} ->
         [
-          <<0, 0, 0, 13>>,
           <<6>>,
           encode_integer(index),
           encode_integer(begin),
@@ -88,10 +99,7 @@ defmodule Etorrent.PeerProtocol do
         ]
 
       %Piece{index: index, begin: begin, block: block} ->
-        length = 9 + byte_size(block)
-
         [
-          encode_integer(length),
           <<7>>,
           encode_integer(index),
           encode_integer(begin),
@@ -100,7 +108,6 @@ defmodule Etorrent.PeerProtocol do
 
       %Cancel{index: index, begin: begin, length: length} ->
         [
-          <<0, 0, 0, 13>>,
           <<8>>,
           encode_integer(index),
           encode_integer(begin),

@@ -66,6 +66,10 @@ defmodule Etorrent.TorrentWorker do
     GenServer.call(name(info_hash), :peer_not_interested)
   end
 
+  def peer_sent_block(info_hash, block_length) do
+    GenServer.call(name(info_hash), {:peer_sent_block, block_length})
+  end
+
   def we_have_piece(info_hash, index) do
     GenServer.call(name(info_hash), {:we_have_piece, index})
   end
@@ -206,6 +210,12 @@ defmodule Etorrent.TorrentWorker do
         ratio: 0.0,
         pieces: piece_statuses
       }}, state}
+  end
+
+  def handle_call({:peer_sent_block, block_length}, {peer_pid, _tag}, state) do
+    # TODO update some upload rate state for a peer here,
+    # but for now do nothing
+    {:reply, :ok, state}
   end
 
   def handle_call(:get_padded_bitfield, _from, %State{piece_statuses: piece_statuses} = state) do
