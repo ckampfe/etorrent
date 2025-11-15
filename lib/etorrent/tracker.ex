@@ -47,14 +47,7 @@ defmodule Etorrent.Tracker do
             if failure_reason = Map.get(decoded_tracker_response, :failure_reason) do
               {:error, failure_reason}
             else
-              out =
-                if options[:compact] do
-                  decoded_tracker_response
-                else
-                  un_utf8_peer_ids(decoded_tracker_response)
-                end
-
-              {:ok, out}
+              {:ok, normalize_response(decoded_tracker_response)}
             end
 
           _status ->
@@ -71,21 +64,63 @@ defmodule Etorrent.Tracker do
     end
   end
 
-  defp un_utf8_peer_ids(decoded_tracker_response) do
-    Map.update!(decoded_tracker_response, :peers, fn peers ->
-      Enum.reduce(peers, [], fn peer, acc ->
-        updated_peer =
-          Map.update!(peer, :"peer id", fn
-            peer_id when is_binary(peer_id) ->
-              # needed to turn UTF-8 respones from `bittorrent-tracker` in
-              peer_id |> String.to_charlist() |> :binary.list_to_bin()
+  def normalize_response(decoded_tracker_response) do
+    case decoded_tracker_response do
+      %{peers: peers} when is_binary(peers) ->
+        # from bencode:
+        #
+        #  %{
+        #    complete: 0,
+        #    incomplete: 1,
+        #    interval: 600,
+        #    peers: <<127, 0, 0, 1, 35, 40>>,
+        #    peers6: ""
+        #  }
+        ipv4_peers =
+          for <<a1, a2, a3, a4, port::unsigned-integer-16 <- peers>> do
+            %{ip: {a1, a2, a3, a4}, port: port}
+          end
 
-            peer_id ->
-              peer_id
+        peers6 = Map.get(decoded_tracker_response, :peers6, "")
+
+        ipv6_peers =
+          for <<a1::16, a2::16, a3::16, a4::16, a5::16, a6::16, a7::16, a8::16,
+                port::unsigned-integer-16 <- peers6>> do
+            %{ip: {a1, a2, a3, a4, a5, a6, a7, a8}, port: port}
+          end
+
+        decoded_tracker_response
+        |> Map.put(:peers, ipv4_peers ++ ipv6_peers)
+        |> Map.delete(:peers6)
+
+      %{peers: peers} when is_list(peers) ->
+        # from bencode:
+        #
+        #  %{
+        #    complete: 0,
+        #    incomplete: 1,
+        #    interval: 600,
+        #    peers: [%{port: 9000, ip: "127.0.0.1", "peer id": "-ET0001-776484494511"}]
+        #  }
+        Map.put(
+          decoded_tracker_response,
+          :peers,
+          Enum.map(peers, fn %{"peer id": peer_id} = peer ->
+            peer_id = peer_id |> String.to_charlist() |> :binary.list_to_bin()
+
+            peer
+            |> Map.put(:peer_id, peer_id)
+            |> Map.delete(:"peer id")
+            |> Map.update!(:ip, fn ip ->
+              {:ok, ip} =
+                ip
+                |> to_charlist
+                |> :inet.parse_address()
+
+              ip
+            end)
           end)
-
-        [updated_peer | acc]
-      end)
-    end)
+        )
+    end
   end
 end

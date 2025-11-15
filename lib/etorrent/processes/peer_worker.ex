@@ -69,7 +69,7 @@ defmodule Etorrent.PeerWorker do
     ]
   end
 
-  def init({mode, %{info_hash: info_hash, name: name} = args}) do
+  def init({mode, %{info_hash: info_hash, name: name} = _args}) do
     state = %State{
       info_hash: info_hash,
       name: name
@@ -149,7 +149,7 @@ defmodule Etorrent.PeerWorker do
   # send bitfield
   def handle_continue(
         :open_peer_connection,
-        %State{host: host, port: port, info_hash: info_hash, peer_id: peer_id} = state
+        %State{host: host, port: port, info_hash: info_hash, peer_id: _peer_id} = state
       ) do
     {:ok, socket} = :gen_tcp.connect(host, port, [:binary, send_timeout: :timer.seconds(5)])
 
@@ -272,16 +272,18 @@ defmodule Etorrent.PeerWorker do
           :ok =
             DataFile.send_piece(info_hash, data_file, index, block_begin, block_length, socket)
 
-          TorrentWorker.peer_sent_block(info_hash, block_length)
+          TorrentWorker.sent_block_to_peer(info_hash, block_length)
 
           {:noreply, state}
 
         # TODO what should we actually do here after writing the data to disk?
         # should we handle verification here, or in the TorrentWorker?
-        %PeerProtocol.Piece{index: index, begin: begin, block: _chunk} = piece_message ->
+        %PeerProtocol.Piece{index: index, begin: begin, block: chunk} = piece_message ->
           Logger.debug("received peer piece message #{index} #{begin} block")
 
           :ok = DataFile.write_block(info_hash, data_file, piece_message)
+
+          TorrentWorker.peer_sent_block(info_hash, index, begin, byte_size(chunk))
 
           {:ok, have?} = DataFile.verify_piece(info_hash, data_file, index)
 
