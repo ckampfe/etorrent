@@ -115,11 +115,9 @@ defmodule Etorrent.TorrentWorker do
       #   peer_is_choking_us: bool
       # }`
       peer_statuses: %{},
-      # `peer pid` -> `piece index`
-      # requests: BiMultiMap.new(),
       # `peer pid` -> `{piece_index, begin, length}` (block)
       inflight_requests: BiMultiMap.new(),
-      state: :started,
+      state: :leaching,
       block_length: Application.compile_env(:etorrent, :block_length, 2 ** 15),
       inflight_requests_target: Application.compile_env(:etorrent, :inflight_requests_target, 5),
       maximum_uploads: Application.compile_env(:etorrent, :maximum_uploads, 4)
@@ -141,7 +139,7 @@ defmodule Etorrent.TorrentWorker do
     state = %State{
       info_hash: info_hash,
       data_path: data_path,
-      state: :started,
+      state: :leaching,
       peer_id: peer_id,
       port: 9000,
       piece_statuses: <<>>,
@@ -175,10 +173,10 @@ defmodule Etorrent.TorrentWorker do
     state = %{state | piece_statuses: piece_statuses}
 
     send(self(), :announce)
-    send(self(), :request_tick)
-    send(self(), :unchoke_tick)
+    # Process.send_after(self(), :request_tick, :timer.seconds(5))
+    Process.send_after(self(), :unchoke_tick, :timer.seconds(5))
 
-    Process.send_after(self(), :clear_old_inflight_requests, :timer.seconds(30))
+    # Process.send_after(self(), :clear_old_inflight_requests, :timer.seconds(30))
 
     {:noreply, state}
   end
@@ -259,11 +257,7 @@ defmodule Etorrent.TorrentWorker do
   end
 
   def handle_call(:get_padded_bitfield, _from, %State{piece_statuses: piece_statuses} = state) do
-    length = bit_size(piece_statuses)
-
-    padding = <<0::size(ceil(length / 8) * 8 - length)>>
-
-    padded_bitfield = <<piece_statuses::bits, padding::bits>>
+    padded_bitfield = DataFile.pad_to_full_octets(piece_statuses)
 
     {:reply, {:ok, padded_bitfield}, state}
   end
@@ -316,9 +310,6 @@ defmodule Etorrent.TorrentWorker do
     state = %{
       state
       | piece_statuses: DataFile.set_bit(state.piece_statuses, piece_index)
-        # requests: BiMultiMap.delete_value(state.requests, piece_index),
-        # `peer pid` -> `{piece_index, begin, length}` (block)
-        # inflight_requests: BiMultiMap
     }
 
     # TODO remove all outstanding inflight_requests that have the piece_index
@@ -328,6 +319,14 @@ defmodule Etorrent.TorrentWorker do
     Enum.each(peers, fn peer ->
       PeerWorker.we_have_piece(peer, piece_index)
     end)
+
+    state =
+      if have_all?(state.piece_statuses) do
+        Logger.debug("done leaching, now seeding")
+        %{state | state: :seeding}
+      else
+        state
+      end
 
     {:reply, :ok, state}
   end
@@ -421,7 +420,7 @@ defmodule Etorrent.TorrentWorker do
       if interested_in_peer? do
         Logger.debug("interested in peer after bitfield")
         PeerWorker.interested(peer_pid)
-        # put_in(state, [:peer_statuses, peer_pid, :interested_in_peer], true)
+
         %{
           state
           | peer_statuses: put_in(state.peer_statuses, [peer_pid, :interested_in_peer], true)
@@ -431,22 +430,19 @@ defmodule Etorrent.TorrentWorker do
         state
       end
 
-    Process.send_after(self(), :request_tick, 100)
+    Process.send_after(self(), :request_tick, :timer.seconds(5))
 
     {:reply, :ok, state}
   end
 
-  # TODO
-  #
-  # do we want to store peer choked/interested state in this process?
-  # peer processes do not make the determination to download on their own
-  # they are dumb, they should only begin downloading if commanded
-
+  # TODO figure out how to manage started/stopped/complete announce events
+  # when done leaching, starting, etc.
   def handle_info(
         :announce,
         %State{
           info_hash: info_hash,
           peer_id: peer_id,
+          data_path: data_path,
           port: port,
           peer_pid_address_port: peer_pid_address_port
         } = state
@@ -480,6 +476,7 @@ defmodule Etorrent.TorrentWorker do
                 case PeerSupervisor.start_peer_for_outgoing_connection(
                        info_hash,
                        peer_id,
+                       data_path,
                        ip,
                        port
                      ) do
@@ -527,10 +524,17 @@ defmodule Etorrent.TorrentWorker do
   # defp get_(remaining_wanted_pieces, inflight_request_set) do
   # end
 
+  # do nothing here, turning off the request tick, because we
+  # no longer need to make requests
+  def handle_info(:request_tick, %State{state: :seeding} = state) do
+    {:noreply, state}
+  end
+
   # this would be so much better with a relational database!
   def handle_info(
         :request_tick,
         %State{
+          state: :leaching,
           inflight_requests: inflight_requests,
           peers_have_pieces: peers_have_pieces
         } = state
@@ -590,6 +594,7 @@ defmodule Etorrent.TorrentWorker do
   def handle_info(:clear_old_inflight_requests, %State{} = state) do
     state =
       if BiMultiMap.size(state.inflight_requests) > 0 do
+        # TODO should we also send cancel messages to peers here or no?
         Logger.debug("cleared #{Enum.count(state.inflight_requests)} old requests")
         %{state | inflight_requests: BiMultiMap.new()}
       else
@@ -598,8 +603,6 @@ defmodule Etorrent.TorrentWorker do
       end
 
     Process.send_after(self(), :clear_old_inflight_requests, :timer.seconds(30))
-
-    # TODO should we also send cancel messages to peers here or no?
 
     {:noreply, state}
   end
@@ -795,6 +798,18 @@ defmodule Etorrent.TorrentWorker do
         end
     end
     |> then(fn {zeroes, _} -> zeroes end)
+  end
+
+  def have_all?(bits) when is_bitstring(bits) do
+    size =
+      bit_size(bits)
+
+    value = Bitwise.bsl(1, size) - 1
+
+    matcher =
+      <<value::size(size)>>
+
+    matcher == bits
   end
 
   defp name(info_hash) do

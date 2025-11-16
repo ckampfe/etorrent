@@ -68,14 +68,18 @@ defmodule Etorrent.PeerWorker do
     ]
   end
 
-  def init({mode, %{info_hash: info_hash, address: address, port: port} = args}) do
-    dbg(args)
+  def init(
+        {mode, %{info_hash: info_hash, data_path: data_path, address: address, port: port} = args}
+      ) do
+    {:ok, data_file} = DataFile.open_or_create(data_path)
 
     state = %State{
       info_hash: info_hash,
       peer_id: Map.get(args, :peer_id),
       address: address,
-      port: port
+      port: port,
+      data_path: data_path,
+      data_file: data_file
     }
 
     Logger.metadata(info_hash: Base.encode16(info_hash) |> String.slice(0..5))
@@ -126,7 +130,7 @@ defmodule Etorrent.PeerWorker do
 
   def handle_continue(
         :reply_with_handshake,
-        %{info_hash: info_hash, peer_id: peer_id, socket: socket} = state
+        %State{info_hash: info_hash, peer_id: peer_id, socket: socket} = state
       ) do
     handshake = PeerProtocol.encode_handshake(info_hash, peer_id)
 
@@ -167,11 +171,17 @@ defmodule Etorrent.PeerWorker do
            <<19, "BitTorrent protocol", _reserved::binary-size(8),
              remote_info_hash::binary-size(20), remote_peer_id::binary-size(20)>>}}
          when remote_info_hash == info_hash <-
-           {:receive_handshake, :gen_tcp.recv(socket, 1 + 19 + 8 + 20 + 20, :timer.seconds(5))},
-         {_, {:ok, bitfield}} <-
-           {:get_padded_bitfield, TorrentWorker.get_padded_bitfield(info_hash)},
-         encoded_bitfield = PeerProtocol.encode(%PeerProtocol.Bitfield{bitfield: bitfield}),
-         {_, :ok} <- {:send_bitfield, :gen_tcp.send(socket, encoded_bitfield)} do
+           {:receive_handshake, :gen_tcp.recv(socket, 1 + 19 + 8 + 20 + 20, :timer.seconds(5))} do
+      # TODO
+      #
+      # figure out when/how/where to send bitfield value.
+      # not sending it right here was necessary to make the handshake work in an
+      # outgoing scneario. or maybe we were sending the bitfield incorrectly, not sure.
+      #
+      #  {_, {:ok, bitfield}} <-
+      #    {:get_padded_bitfield, TorrentWorker.get_padded_bitfield(info_hash)},
+      #  encoded_bitfield = PeerProtocol.encode(%PeerProtocol.Bitfield{bitfield: bitfield}),
+      #  {_, :ok} <- {:send_bitfield, :gen_tcp.send(socket, encoded_bitfield)} do
       set_post_handshake_socket_mode(socket)
       state = %{state | socket: socket, remote_peer_id: remote_peer_id}
       {:noreply, state}
@@ -194,24 +204,28 @@ defmodule Etorrent.PeerWorker do
   def handle_cast(:choke, %State{socket: socket} = state) do
     encoded_choke = PeerProtocol.encode(%PeerProtocol.Choke{})
     :ok = :gen_tcp.send(socket, encoded_choke)
+    Logger.debug("sent choke")
     {:noreply, state}
   end
 
   def handle_cast(:unchoke, %State{socket: socket} = state) do
     encoded_unchoke = PeerProtocol.encode(%PeerProtocol.Unchoke{})
     :ok = :gen_tcp.send(socket, encoded_unchoke)
+    Logger.debug("sent unchoke")
     {:noreply, state}
   end
 
   def handle_cast(:interested, %State{socket: socket} = state) do
     encoded_interested = PeerProtocol.encode(%PeerProtocol.Interested{})
     :ok = :gen_tcp.send(socket, encoded_interested)
+    Logger.debug("sent interested")
     {:noreply, state}
   end
 
   def handle_cast(:not_interested, %State{socket: socket} = state) do
     encoded_not_interested = PeerProtocol.encode(%PeerProtocol.NotInterested{})
     :ok = :gen_tcp.send(socket, encoded_not_interested)
+    Logger.debug("sent not interested")
     {:noreply, state}
   end
 

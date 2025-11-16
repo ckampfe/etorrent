@@ -19,8 +19,6 @@ defmodule Etorrent.DataFile do
     if File.exists?(path) do
       :file.open(path, options)
     else
-      dbg(size)
-
       with {_, {:ok, file}} <- {:open, :file.open(path, options)},
            :ok <- :file.allocate(file, 0, size) do
         {:ok, file}
@@ -96,5 +94,13 @@ defmodule Etorrent.DataFile do
   def set_bit(b, i) when is_bitstring(b) do
     <<prefix::bits-size(i), _this::bits-1, rest::bits>> = b
     <<prefix::bits, 1::1, rest::bits>>
+  end
+
+  def pad_to_full_octets(bits) do
+    length = bit_size(bits)
+
+    padding = <<0::size(ceil(length / 8) * 8 - length)>>
+
+    <<bits::bits, padding::bits>>
   end
 end

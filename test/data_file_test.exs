@@ -38,4 +38,19 @@ defmodule Etorrent.DataFileTest do
     assert <<0::1, 1::1, 0::1>> = DataFile.set_bit(<<0::1, 0::1, 0::1>>, 1)
     assert <<0::1, 0::1, 1::1>> = DataFile.set_bit(<<0::1, 0::1, 0::1>>, 2)
   end
+
+  test "pad_to_full_octets/1" do
+    assert <<>> == DataFile.pad_to_full_octets(<<>>)
+
+    assert <<1::8>> == DataFile.pad_to_full_octets(<<1::8>>)
+
+    assert <<1::1, 0::1, 0::1, 0::1, 0::1, 0::1, 0::1, 0::1>> ==
+             DataFile.pad_to_full_octets(<<1::1>>)
+
+    assert <<255, 1::1, 0::1, 0::1, 0::1, 0::1, 0::1, 0::1, 0::1>> ==
+             DataFile.pad_to_full_octets(<<255, 4::3>>)
+
+    assert <<255, 255, 1::1, 0::1, 0::1, 0::1, 0::1, 0::1, 0::1, 0::1>> ==
+             DataFile.pad_to_full_octets(<<255, 255, 4::3>>)
+  end
 end
