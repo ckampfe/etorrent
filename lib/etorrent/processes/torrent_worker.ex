@@ -172,13 +172,22 @@ defmodule Etorrent.TorrentWorker do
 
     state = %{state | piece_statuses: piece_statuses}
 
-    send(self(), :announce)
-    # Process.send_after(self(), :request_tick, :timer.seconds(5))
-    Process.send_after(self(), :unchoke_tick, :timer.seconds(5))
+    if have_all?(piece_statuses) do
+      Logger.debug("have all pieces on startup")
 
-    # Process.send_after(self(), :clear_old_inflight_requests, :timer.seconds(30))
+      state = %{state | state: :seeding}
+      send(self(), :announce)
+      Process.send_after(self(), :unchoke_tick, :timer.seconds(5))
+      {:noreply, state}
+    else
+      send(self(), :announce)
+      # Process.send_after(self(), :request_tick, :timer.seconds(5))
+      Process.send_after(self(), :unchoke_tick, :timer.seconds(5))
 
-    {:noreply, state}
+      # Process.send_after(self(), :clear_old_inflight_requests, :timer.seconds(30))
+
+      {:noreply, state}
+    end
   end
 
   def handle_call(
@@ -459,6 +468,7 @@ defmodule Etorrent.TorrentWorker do
              compact: true
            ) do
         {:ok, announce_response} ->
+          # if state.state == :leaching do
           announce_response =
             Map.update!(announce_response, :peers, fn peers ->
               Enum.filter(peers, fn peer ->
@@ -471,33 +481,38 @@ defmodule Etorrent.TorrentWorker do
             end)
 
           additional_peer_statuses =
-            Enum.reduce(announce_response.peers, %{}, fn %{ip: ip, port: port}, acc ->
-              if !BiMap.has_value?(peer_pid_address_port, {ip, port}) do
-                case PeerSupervisor.start_peer_for_outgoing_connection(
-                       info_hash,
-                       peer_id,
-                       data_path,
-                       ip,
-                       port
-                     ) do
-                  {:ok, peer_pid} ->
-                    _peer_ref = Process.monitor(peer_pid)
+            if state.state == :leaching do
+              Enum.reduce(announce_response.peers, %{}, fn %{ip: ip, port: port}, acc ->
+                if !BiMap.has_value?(peer_pid_address_port, {ip, port}) do
+                  case PeerSupervisor.start_peer_for_outgoing_connection(
+                         info_hash,
+                         peer_id,
+                         data_path,
+                         ip,
+                         port
+                       ) do
+                    {:ok, peer_pid} ->
+                      _peer_ref = Process.monitor(peer_pid)
 
-                    Logger.debug("successfully connected to #{inspect(ip)}:#{port}")
+                      Logger.debug("successfully connected to #{inspect(ip)}:#{port}")
 
-                    Map.put(acc, peer_pid, %{
-                      interested_in_peer: false,
-                      choking_peer: true,
-                      peer_is_interested_in_us: false,
-                      peer_is_choking_us: true
-                    })
+                      Map.put(acc, peer_pid, %{
+                        interested_in_peer: false,
+                        choking_peer: true,
+                        peer_is_interested_in_us: false,
+                        peer_is_choking_us: true
+                      })
 
-                  _ ->
-                    Logger.debug("unable to connect to #{inspect(ip)}:#{port}")
-                    acc
+                    _ ->
+                      Logger.debug("unable to connect to #{inspect(ip)}:#{port}")
+                      acc
+                  end
                 end
-              end
-            end)
+              end)
+            else
+              Logger.debug("state for announce is #{state.state}, not connecting to new peers")
+              %{}
+            end
 
           Process.send_after(self(), :announce, :timer.seconds(announce_response[:interval]))
 
