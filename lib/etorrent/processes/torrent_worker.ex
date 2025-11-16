@@ -26,6 +26,7 @@
 defmodule Etorrent.TorrentWorker do
   use GenServer
   require Logger
+  alias Etorrent.PeerSupervisor
   alias Etorrent.{Tracker, PeerWorker, DataFile, TorrentFile}
 
   ### PUBLIC API ###
@@ -46,8 +47,8 @@ defmodule Etorrent.TorrentWorker do
     GenServer.call(name(info_hash), :get_padded_bitfield)
   end
 
-  def register_new_peer(info_hash, peer_pid, peer_id) do
-    GenServer.call(name(info_hash), {:register_new_peer, peer_pid, peer_id})
+  def register_new_peer(info_hash, peer_pid, peer_id, address, port) do
+    GenServer.call(name(info_hash), {:register_new_peer, peer_pid, peer_id, address, port})
   end
 
   def peer_choke(info_hash) do
@@ -103,14 +104,16 @@ defmodule Etorrent.TorrentWorker do
       piece_statuses: <<>>,
       # mapping of `piece index` -> `peer pid`
       peers_have_pieces: BiMultiMap.new(),
+      # `peer_pid -> peer_id`
+      peer_pid_peer_id: BiMap.new(),
+      # `peer_pid -> {address, port}`
+      peer_pid_address_port: BiMap.new(),
       # mapping of `peer_pid` -> `%{
       #   interested_in_peer: bool,
       #   choking_peer: bool,
       #   peer_is_interested_in_us: bool,
       #   peer_is_choking_us: bool
       # }`
-      # peer_status[:interested_in_peer] && !peer_status[:peer_is_choking_us]
-      peer_pid_peer_id: BiMap.new(),
       peer_statuses: %{},
       # `peer pid` -> `piece index`
       # requests: BiMultiMap.new(),
@@ -118,7 +121,7 @@ defmodule Etorrent.TorrentWorker do
       inflight_requests: BiMultiMap.new(),
       state: :started,
       block_length: Application.compile_env(:etorrent, :block_length, 2 ** 15),
-      inflight_requests_target: Application.compile_env(:etorrent, :inflight_requests_target, 40),
+      inflight_requests_target: Application.compile_env(:etorrent, :inflight_requests_target, 5),
       maximum_uploads: Application.compile_env(:etorrent, :maximum_uploads, 4)
     ]
   end
@@ -158,10 +161,13 @@ defmodule Etorrent.TorrentWorker do
     # TODO load state and configuration from disk
     Logger.debug("#{__MODULE__}: #{inspect(state)}")
 
+    {:ok, length} =
+      TorrentFile.length(info_hash)
+
     {:ok, data_file} =
       DataFile.open_or_create(
         data_path,
-        TorrentFile.length(info_hash)
+        length
       )
 
     {:ok, piece_statuses} = DataFile.verify_all_pieces(info_hash, data_file)
@@ -172,13 +178,13 @@ defmodule Etorrent.TorrentWorker do
     send(self(), :request_tick)
     send(self(), :unchoke_tick)
 
-    Process.send_after(self(), :clear_old_inflight_requests, :timer.seconds(10))
+    Process.send_after(self(), :clear_old_inflight_requests, :timer.seconds(30))
 
     {:noreply, state}
   end
 
   def handle_call(
-        {:register_new_peer, peer_pid, peer_id},
+        {:register_new_peer, peer_pid, peer_id, address, port},
         _from,
         %State{data_path: data_path, peer_id: peer_id} = state
       ) do
@@ -194,7 +200,11 @@ defmodule Etorrent.TorrentWorker do
         peer_is_choking_us: true
       })
 
-    state = %{state | peer_pid_peer_id: BiMap.put(state.peer_pid_peer_id, peer_pid, peer_id)}
+    state = %{
+      state
+      | peer_pid_peer_id: BiMap.put(state.peer_pid_peer_id, peer_pid, peer_id),
+        peer_pid_address_port: BiMap.put(state.peer_pid_address_port, peer_pid, {address, port})
+    }
 
     {:reply, :ok, state}
   end
@@ -258,23 +268,43 @@ defmodule Etorrent.TorrentWorker do
     {:reply, {:ok, padded_bitfield}, state}
   end
 
-  def handle_call(:peer_choke, {peer_pid, _tag}, state) do
-    state = put_in(state, [:peer_statuses, peer_pid, :peer_is_choking_us], true)
+  def handle_call(:peer_choke, {peer_pid, _tag}, %State{} = state) do
+    # state = put_in(state, [:peer_statuses, peer_pid, :peer_is_choking_us], true)
+    state = %{
+      state
+      | peer_statuses: put_in(state.peer_statuses, [peer_pid, :peer_is_choking_us], true)
+    }
+
     {:reply, :ok, state}
   end
 
   def handle_call(:peer_unchoke, {peer_pid, _tag}, state) do
-    state = put_in(state, [:peer_statuses, peer_pid, :peer_is_choking_us], false)
+    # state = put_in(state, [:peer_statuses, peer_pid, :peer_is_choking_us], false)
+    state = %{
+      state
+      | peer_statuses: put_in(state.peer_statuses, [peer_pid, :peer_is_choking_us], false)
+    }
+
     {:reply, :ok, state}
   end
 
   def handle_call(:peer_interested, {peer_pid, _tag}, state) do
-    state = put_in(state, [:peer_statuses, peer_pid, :peer_is_interested_in_us], true)
+    # state = put_in(state, [:peer_statuses, peer_pid, :peer_is_interested_in_us], true)
+    state = %{
+      state
+      | peer_statuses: put_in(state.peer_statuses, [peer_pid, :peer_is_interested_in_us], true)
+    }
+
     {:reply, :ok, state}
   end
 
   def handle_call(:peer_not_interested, {peer_pid, _tag}, state) do
-    state = put_in(state, [:peer_statuses, peer_pid, :peer_is_interested_in_us], false)
+    # state = put_in(state, [:peer_statuses, peer_pid, :peer_is_interested_in_us], false)
+    state = %{
+      state
+      | peer_statuses: put_in(state.peer_statuses, [peer_pid, :peer_is_interested_in_us], false)
+    }
+
     {:reply, :ok, state}
   end
 
@@ -353,18 +383,53 @@ defmodule Etorrent.TorrentWorker do
     {:reply, :ok, state}
   end
 
-  def handle_call({:peer_bitfield, bitfield}, {peer_pid, _tag} = _from, state) do
+  def handle_call(
+        {:peer_bitfield, bitfield},
+        {peer_pid, _tag} = _from,
+        %State{piece_statuses: piece_statuses, peers_have_pieces: peers_have_pieces} = state
+      ) do
+    {peers_have_pieces, _} =
+      for <<have::1 <- bitfield>>, reduce: {peers_have_pieces, 0} do
+        {acc, i} ->
+          if have do
+            {BiMultiMap.put(acc, i, peer_pid), i + 1}
+          else
+            {acc, i + 1}
+          end
+      end
+
+    state = %{state | peers_have_pieces: peers_have_pieces}
+
+    peer_haves =
+      state.peers_have_pieces
+      |> BiMultiMap.get_keys(peer_pid)
+      |> MapSet.new()
+
+    {wants, _} =
+      for <<piece::1 <- piece_statuses>>, reduce: {MapSet.new(), 0} do
+        {wants, i} ->
+          if piece == 0 do
+            {MapSet.put(wants, i), i + 1}
+          else
+            {wants, i + 1}
+          end
+      end
+
+    interested_in_peer? = !Enum.empty?(MapSet.intersection(wants, peer_haves))
+
     state =
-      Map.update!(state, :peers_have_pieces, fn mapping ->
-        for <<have::1 <- bitfield>>, reduce: {mapping, 0} do
-          {acc, i} ->
-            if have do
-              {BiMultiMap.put(acc, i, peer_pid), i + 1}
-            else
-              {acc, i + 1}
-            end
-        end
-      end)
+      if interested_in_peer? do
+        Logger.debug("interested in peer after bitfield")
+        PeerWorker.interested(peer_pid)
+        # put_in(state, [:peer_statuses, peer_pid, :interested_in_peer], true)
+        %{
+          state
+          | peer_statuses: put_in(state.peer_statuses, [peer_pid, :interested_in_peer], true)
+        }
+      else
+        Logger.debug("not interested in peer after bitfield")
+        state
+      end
 
     Process.send_after(self(), :request_tick, 100)
 
@@ -377,12 +442,20 @@ defmodule Etorrent.TorrentWorker do
   # peer processes do not make the determination to download on their own
   # they are dumb, they should only begin downloading if commanded
 
-  def handle_info(:announce, %State{info_hash: info_hash, peer_id: peer_id, port: port} = state) do
+  def handle_info(
+        :announce,
+        %State{
+          info_hash: info_hash,
+          peer_id: peer_id,
+          port: port,
+          peer_pid_address_port: peer_pid_address_port
+        } = state
+      ) do
     Logger.debug("announcing to #{inspect(TorrentFile.announce(info_hash))}")
 
     {:ok, length} = TorrentFile.length(info_hash)
 
-    announce_response =
+    %{announce_response: announce_response, additional_peer_statuses: additional_peer_statuses} =
       case Tracker.announce(info_hash, peer_id, port,
              event: "started",
              # TODO compute real "left"
@@ -394,37 +467,59 @@ defmodule Etorrent.TorrentWorker do
             Map.update!(announce_response, :peers, fn peers ->
               Enum.filter(peers, fn peer ->
                 if other_peer_id = Map.get(peer, :peer_id) do
-                  other_peer_id != peer_id
+                  other_peer_id != peer_id && (peer.ip != {127, 0, 0, 1} && peer.port != port)
                 else
-                  true
+                  peer.ip != {127, 0, 0, 1} && peer.port != port
                 end
               end)
             end)
 
-          # TODO
-          # connect to unconnected peers up to the limit,
-          # create peer_statuses for them
-          #
-          #
-          # think about this:
-          #
-          # if we have normal peers, we have %{ip: ip, port: port, "peer id": peer_id}
-          # if we have compact peers, we have (roughly) {ip, port}
-          # no peer id
-          # what subset can we reasonably store that encompasses both, no matter the
-          # announce mode?
+          additional_peer_statuses =
+            Enum.reduce(announce_response.peers, %{}, fn %{ip: ip, port: port}, acc ->
+              if !BiMap.has_value?(peer_pid_address_port, {ip, port}) do
+                case PeerSupervisor.start_peer_for_outgoing_connection(
+                       info_hash,
+                       peer_id,
+                       ip,
+                       port
+                     ) do
+                  {:ok, peer_pid} ->
+                    _peer_ref = Process.monitor(peer_pid)
+
+                    Logger.debug("successfully connected to #{inspect(ip)}:#{port}")
+
+                    Map.put(acc, peer_pid, %{
+                      interested_in_peer: false,
+                      choking_peer: true,
+                      peer_is_interested_in_us: false,
+                      peer_is_choking_us: true
+                    })
+
+                  _ ->
+                    Logger.debug("unable to connect to #{inspect(ip)}:#{port}")
+                    acc
+                end
+              end
+            end)
 
           Process.send_after(self(), :announce, :timer.seconds(announce_response[:interval]))
 
-          announce_response
+          %{
+            announce_response: announce_response,
+            additional_peer_statuses: additional_peer_statuses
+          }
 
         {:error, e} = error ->
           Logger.debug("Error announcing: #{inspect(e)}")
           Process.send_after(self(), :announce, :timer.minutes(3))
-          error
+          %{announce_response: error, additional_peer_statuses: %{}}
       end
 
-    state = %{state | announce_response: announce_response}
+    state = %{
+      state
+      | announce_response: announce_response,
+        peer_statuses: Map.merge(state.peer_statuses, additional_peer_statuses)
+    }
 
     {:noreply, state}
   end
@@ -436,25 +531,37 @@ defmodule Etorrent.TorrentWorker do
   def handle_info(
         :request_tick,
         %State{
-          inflight_requests: inflight_requests
+          inflight_requests: inflight_requests,
+          peers_have_pieces: peers_have_pieces
         } = state
       ) do
-    blocks_to_request = get_blocks_to_request(state)
+    blocks_to_request =
+      get_blocks_to_request(state)
 
     if Enum.empty?(blocks_to_request) do
+      Logger.debug("no blocks to request")
+      Process.send_after(self(), :request_tick, :timer.seconds(5))
       {:noreply, state}
     else
-      Enum.each(blocks_to_request, fn {piece_index, begin, length} ->
-        random_peer =
-          piece_index
-          |> BiMultiMap.get(piece_index)
-          |> Enum.random()
+      Logger.debug("requesting #{Enum.count(blocks_to_request)} pieces")
 
-        PeerWorker.request_block(random_peer, piece_index, begin, length)
+      inflight_requests =
+        Enum.reduce(blocks_to_request, inflight_requests, fn {piece_index, begin, length} =
+                                                               request,
+                                                             acc ->
+          random_peer =
+            peers_have_pieces
+            |> BiMultiMap.get(piece_index)
+            |> Enum.random()
 
-        Logger.debug("asked peer #{inspect(random_peer)} to request piece #{piece_index}")
-      end)
+          PeerWorker.request_block(random_peer, piece_index, begin, length)
 
+          Logger.debug("asked peer #{inspect(random_peer)} to request piece #{piece_index}")
+
+          BiMultiMap.put(acc, random_peer, request)
+        end)
+
+      # `peer pid` -> `{piece_index, begin, length}` (block)
       state = %{state | inflight_requests: inflight_requests}
 
       Process.send_after(self(), :request_tick, :timer.seconds(1))
@@ -490,7 +597,7 @@ defmodule Etorrent.TorrentWorker do
         state
       end
 
-    Process.send_after(self(), :clear_old_inflight_requests, :timer.seconds(10))
+    Process.send_after(self(), :clear_old_inflight_requests, :timer.seconds(30))
 
     # TODO should we also send cancel messages to peers here or no?
 
@@ -502,9 +609,10 @@ defmodule Etorrent.TorrentWorker do
     state = %{
       state
       | peers_have_pieces: BiMultiMap.delete_value(state.peers_have_pieces, pid),
-        inflight_requests: BiMultiMap.delete(state.inflight_requests, pid),
+        inflight_requests: BiMultiMap.delete_key(state.inflight_requests, pid),
         peer_statuses: Map.delete(state.peer_statuses, pid),
-        peer_pid_peer_id: BiMap.delete(state.peer_pid_peer_id, pid)
+        peer_pid_peer_id: BiMap.delete_key(state.peer_pid_peer_id, pid),
+        peer_pid_address_port: BiMap.delete_key(state.peer_pid_address_port, pid)
     }
 
     {:noreply, state}

@@ -13,19 +13,23 @@ defmodule Etorrent.PeerSupervisor do
       name,
       %{
         id: PeerWorker,
-        start: {PeerWorker, :start_link_incoming_connection, [info_hash, peer_id, socket]}
+        start: {PeerWorker, :start_link_incoming_connection, [info_hash, peer_id, socket]},
+        restart: :temporary
       }
     )
   end
 
-  def start_peer_for_outgoing_connection(info_hash, peer_id) do
+  def start_peer_for_outgoing_connection(info_hash, peer_id, address, port) do
     name = name(info_hash)
 
     DynamicSupervisor.start_child(
       name,
       %{
         id: PeerWorker,
-        start: {PeerWorker, :start_link_outgoing_connection, [info_hash, peer_id]}
+        start:
+          {PeerWorker, :start_link_outgoing_connection,
+           [%{info_hash: info_hash, peer_id: peer_id, address: address, port: port}]},
+        restart: :temporary
       }
     )
   end

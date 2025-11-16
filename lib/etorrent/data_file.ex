@@ -19,9 +19,10 @@ defmodule Etorrent.DataFile do
     if File.exists?(path) do
       :file.open(path, options)
     else
-      with {:ok, file} <- :file.open(path, options),
-           {:ok, _} <- :file.position(file, size),
-           :ok <- :file.truncate(file) do
+      dbg(size)
+
+      with {_, {:ok, file}} <- {:open, :file.open(path, options)},
+           :ok <- :file.allocate(file, 0, size) do
         {:ok, file}
       end
     end

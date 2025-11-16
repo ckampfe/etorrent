@@ -118,6 +118,9 @@ defmodule Etorrent.PeerProtocol do
 
   def decode(bytes) do
     case bytes do
+      <<>> ->
+        {:ok, %KeepAlive{}}
+
       <<0>> ->
         {:ok, %Choke{}}
 
@@ -133,7 +136,7 @@ defmodule Etorrent.PeerProtocol do
       <<4, index::big-integer-32>> ->
         {:ok, %Have{index: index}}
 
-      <<5, bitfield>> ->
+      <<5, bitfield::bitstring>> ->
         {:ok, %Bitfield{bitfield: bitfield}}
 
       <<6, index::big-integer-32, begin::big-integer-32, length::big-integer-32>> ->

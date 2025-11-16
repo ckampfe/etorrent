@@ -114,7 +114,7 @@ defmodule Etorrent.Tracker do
             |> Map.update!(:ip, fn ip ->
               {:ok, ip} =
                 ip
-                |> to_charlist
+                |> to_charlist()
                 |> :inet.parse_address()
 
               ip
