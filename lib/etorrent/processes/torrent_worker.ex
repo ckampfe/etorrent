@@ -1,9 +1,3 @@
-# need to figure out what state we need
-# - what pieces we have
-# - what pieces we want
-# - what pieces peers have
-# - what pieces we have requested from peers
-#
 # with operations:
 # - [x] load our had/want pieces from disk on start (bitfield)
 # - [x] store that we now have a piece
