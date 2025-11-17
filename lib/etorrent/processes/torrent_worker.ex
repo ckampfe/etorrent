@@ -16,6 +16,7 @@
 #       if peer is interested in us and we are not choking it: allow it to request from us
 # - [x] we need to tell peer connections to request blocks, not pieces,
 # -     have peer connections just be dumb and request what they're told
+# - [ ] use the db to store downloaded/uploaded/ratio etc.
 
 defmodule Etorrent.TorrentWorker do
   use GenServer
