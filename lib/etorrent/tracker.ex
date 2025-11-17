@@ -1,8 +1,14 @@
 defmodule Etorrent.Tracker do
   alias Etorrent.{Bencode, TorrentFile}
 
-  def announce(info_hash, peer_id, port, options \\ [compact: false]) do
+  require Logger
+
+  def announce(info_hash, peer_id, port, pieces, options \\ [compact: false]) do
     {:ok, announce_url} = TorrentFile.announce(info_hash)
+
+    {:ok, left} = TorrentFile.left(info_hash, pieces)
+
+    Logger.debug("announcing #{left} bytes left")
 
     url =
       announce_url
@@ -12,13 +18,14 @@ defmodule Etorrent.Tracker do
       |> URI.append_query("port=#{port}")
       |> URI.append_query("uploaded=0")
       |> URI.append_query("downloaded=0")
+      |> URI.append_query("left=#{left}")
 
-    url =
-      if options[:left] do
-        URI.append_query(url, "left=#{options[:left]}")
-      else
-        url
-      end
+    # url =
+    #   if options[:left] do
+    #     URI.append_query(url, "left=#{options[:left]}")
+    #   else
+    #     url
+    #   end
 
     url =
       if options[:event] do

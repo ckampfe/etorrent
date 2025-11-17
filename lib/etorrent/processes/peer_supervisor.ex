@@ -13,7 +13,13 @@ defmodule Etorrent.PeerSupervisor do
       name,
       %{
         id: PeerWorker,
-        start: {PeerWorker, :start_link_incoming_connection, [info_hash, peer_id, socket]},
+        start: {
+          PeerWorker,
+          :start_link_incoming_connection,
+          [
+            %{info_hash: info_hash, peer_id: peer_id, socket: socket}
+          ]
+        },
         restart: :temporary
       }
     )
@@ -26,17 +32,19 @@ defmodule Etorrent.PeerSupervisor do
       name,
       %{
         id: PeerWorker,
-        start:
-          {PeerWorker, :start_link_outgoing_connection,
-           [
-             %{
-               info_hash: info_hash,
-               peer_id: peer_id,
-               data_path: data_path,
-               address: address,
-               port: port
-             }
-           ]},
+        start: {
+          PeerWorker,
+          :start_link_outgoing_connection,
+          [
+            %{
+              info_hash: info_hash,
+              peer_id: peer_id,
+              data_path: data_path,
+              address: address,
+              port: port
+            }
+          ]
+        },
         restart: :temporary
       }
     )

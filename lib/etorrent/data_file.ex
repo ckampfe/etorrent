@@ -12,6 +12,7 @@ defmodule Etorrent.DataFile do
   verified.
   """
 
+  alias Etorrent.PeerProtocol
   alias Etorrent.PeerProtocol.Piece
   alias Etorrent.TorrentFile
 
@@ -77,9 +78,14 @@ defmodule Etorrent.DataFile do
     with {:ok, %{position: piece_position, length: _length, hash: _expected_hash}} <-
            TorrentFile.piece_position_length_and_hash(info_hash, piece_index),
          block_position = piece_position + begin,
-         {:ok, ^block_length} <-
-           :file.sendfile(data_file, socket, block_position, block_length, []) do
-      :ok
+         {:ok, chunk} <- :file.pread(data_file, block_position, block_length),
+         encoded_chunk =
+           PeerProtocol.encode(%PeerProtocol.Piece{
+             index: piece_index,
+             begin: begin,
+             block: chunk
+           }) do
+      :gen_tcp.send(socket, encoded_chunk)
     end
   end
 
@@ -89,6 +95,20 @@ defmodule Etorrent.DataFile do
          {:ok, piece} <- :file.pread(data_file, position, length) do
       {:ok, :crypto.hash(:sha, piece) == expected_hash}
     end
+  end
+
+  def one_indexes(bits) when is_bitstring(bits) do
+    {indexes, _} =
+      for <<bit::1 <- bits>>, reduce: {[], 0} do
+        {acc, i} ->
+          if bit == 1 do
+            {[i | acc], i + 1}
+          else
+            {acc, i + 1}
+          end
+      end
+
+    indexes
   end
 
   def set_bit(b, i) when is_bitstring(b) do

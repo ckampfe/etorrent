@@ -38,10 +38,22 @@ defmodule EtorrentWeb.TorrentHTML do
             <progress
               class="progress"
               value={
-                torrent[:pieces]
-                |> Enum.filter(fn piece -> piece end)
-                |> Enum.count()
-                |> then(fn haves -> haves / length(torrent[:pieces]) end)
+                haves =
+                  for <<bit::1 <- torrent[:pieces]>>, reduce: 0 do
+                    acc ->
+                      if bit == 1 do
+                        acc + 1
+                      else
+                        acc
+                      end
+                  end
+
+                haves / bit_size(torrent[:pieces])
+
+                # torrent[:pieces]
+                # |> Enum.filter(fn piece -> piece end)
+                # |> Enum.count()
+                # |> then(fn haves -> haves / length(torrent[:pieces]) end)
               }
             >
             </progress>

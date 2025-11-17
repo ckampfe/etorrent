@@ -6,17 +6,17 @@
 #
 # with operations:
 # - [x] load our had/want pieces from disk on start (bitfield)
-# - [ ] store that we now have a piece
+# - [x] store that we now have a piece
 # - [x] store that a peer has a piece
 # - [x] store that we have requested a piece from a peer
 # - [x] remove requests when a peer disconnects
 # - [ ] remove requests when a peer chokes
-# - [ ] track state of what peers are choking us
-# - [i] get random "want" piece that we haven't already requested
-# - [ ] store interested/choked status on this TorrentWorker rather than in each process
-# - [ ] compute "left" amount being (length - have) to send to tracker
-# - [ ] connect to peers after we get them from announce, if we are leaching
-# - [ ] figure out interest/choke state:
+# - [x] track state of what peers are choking us
+# - [x] get random "want" piece that we haven't already requested
+# - [x] store interested/choked status on this TorrentWorker rather than in each process
+# - [x] compute "left" amount being (length - have) to send to tracker
+# - [x] connect to peers after we get them from announce, if we are leaching
+# - [x] figure out interest/choke state:
 #       if peer has pieces we don't have, we are interested in it, otherwise not.
 #       if we are interested in peer and peer is not choking us: request from it
 #       if peer is interested in us and we are not choking it: allow it to request from us
@@ -87,6 +87,10 @@ defmodule Etorrent.TorrentWorker do
     GenServer.call(name(info_hash), {:peer_bitfield, bitfield})
   end
 
+  def complete_handshake_with_incoming_peer(info_hash, peer_pid) do
+    GenServer.call(name(info_hash), {:complete_handshake_with_incoming_peer, peer_pid})
+  end
+
   ### END PUBLIC API ###
 
   ### CALLBACKS ###
@@ -147,9 +151,11 @@ defmodule Etorrent.TorrentWorker do
       peer_statuses: %{}
     }
 
+    {:ok, name} = TorrentFile.name(info_hash)
+
     Logger.metadata(
       info_hash: Base.encode16(info_hash) |> String.slice(0..5),
-      name: TorrentFile.name(info_hash)
+      name: name
     )
 
     {:ok, state, {:continue, :setup}}
@@ -191,7 +197,7 @@ defmodule Etorrent.TorrentWorker do
   end
 
   def handle_call(
-        {:register_new_peer, peer_pid, peer_id, address, port},
+        {:register_new_peer, peer_pid, remote_peer_id, address, port},
         _from,
         %State{data_path: data_path, peer_id: peer_id} = state
       ) do
@@ -199,20 +205,33 @@ defmodule Etorrent.TorrentWorker do
 
     PeerWorker.give_peer_id(peer_pid, peer_id, data_path)
 
-    state =
-      put_in(state, [:peer_statuses, peer_pid], %{
-        interested_in_peer: false,
-        choking_peer: true,
-        peer_is_interested_in_us: false,
-        peer_is_choking_us: true
-      })
-
     state = %{
       state
-      | peer_pid_peer_id: BiMap.put(state.peer_pid_peer_id, peer_pid, peer_id),
-        peer_pid_address_port: BiMap.put(state.peer_pid_address_port, peer_pid, {address, port})
+      | peer_pid_peer_id: BiMap.put(state.peer_pid_peer_id, peer_pid, remote_peer_id),
+        peer_pid_address_port: BiMap.put(state.peer_pid_address_port, peer_pid, {address, port}),
+        peer_statuses:
+          Map.put(
+            state.peer_statuses,
+            peer_pid,
+            %{
+              interested_in_peer: false,
+              choking_peer: true,
+              peer_is_interested_in_us: false,
+              peer_is_choking_us: true
+            }
+          )
     }
 
+    {:reply, :ok, state}
+  end
+
+  def handle_call(
+        {:complete_handshake_with_incoming_peer, peer_pid},
+        _from,
+        %State{piece_statuses: piece_statuses} = state
+      ) do
+    padded_bitfield = DataFile.pad_to_full_octets(piece_statuses)
+    :ok = PeerWorker.reply_with_handshake(peer_pid, padded_bitfield)
     {:reply, :ok, state}
   end
 
@@ -272,11 +291,12 @@ defmodule Etorrent.TorrentWorker do
   end
 
   def handle_call(:peer_choke, {peer_pid, _tag}, %State{} = state) do
-    # state = put_in(state, [:peer_statuses, peer_pid, :peer_is_choking_us], true)
     state = %{
       state
       | peer_statuses: put_in(state.peer_statuses, [peer_pid, :peer_is_choking_us], true)
     }
+
+    # TODO remove any inflight requests
 
     {:reply, :ok, state}
   end
@@ -369,7 +389,7 @@ defmodule Etorrent.TorrentWorker do
     interested_in_peer? = !Enum.empty?(MapSet.intersection(wants, peer_haves))
 
     previously_interested_in_peer? =
-      get_in(state, [:peer_statuses, peer_pid, :interested_in_peer])
+      get_in(state.peer_statuses, [peer_pid, :interested_in_peer])
 
     state =
       case {interested_in_peer?, previously_interested_in_peer?} do
@@ -378,11 +398,19 @@ defmodule Etorrent.TorrentWorker do
 
         {true, false} ->
           PeerWorker.interested(peer_pid)
-          put_in(state, [:peer_statuses, peer_pid, :interested_in_peer], true)
+
+          %{
+            state
+            | peer_statuses: put_in(state.peer_statuses, [peer_pid, :interested_in_peer], true)
+          }
 
         {false, true} ->
           PeerWorker.not_interested(peer_pid)
-          put_in(state, [:peer_statuses, peer_pid, :interested_in_peer], false)
+
+          %{
+            state
+            | peer_statuses: put_in(state.peer_statuses, [peer_pid, :interested_in_peer], false)
+          }
 
         {false, false} ->
           state
@@ -453,18 +481,16 @@ defmodule Etorrent.TorrentWorker do
           peer_id: peer_id,
           data_path: data_path,
           port: port,
-          peer_pid_address_port: peer_pid_address_port
+          peer_pid_address_port: peer_pid_address_port,
+          piece_statuses: piece_statuses
         } = state
       ) do
     Logger.debug("announcing to #{inspect(TorrentFile.announce(info_hash))}")
 
-    {:ok, length} = TorrentFile.length(info_hash)
-
     %{announce_response: announce_response, additional_peer_statuses: additional_peer_statuses} =
-      case Tracker.announce(info_hash, peer_id, port,
+      case Tracker.announce(info_hash, peer_id, port, piece_statuses,
              event: "started",
              # TODO compute real "left"
-             left: length,
              compact: true
            ) do
         {:ok, announce_response} ->
@@ -535,9 +561,6 @@ defmodule Etorrent.TorrentWorker do
 
     {:noreply, state}
   end
-
-  # defp get_(remaining_wanted_pieces, inflight_request_set) do
-  # end
 
   # do nothing here, turning off the request tick, because we
   # no longer need to make requests

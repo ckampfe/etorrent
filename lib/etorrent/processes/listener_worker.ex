@@ -3,7 +3,7 @@ defmodule Etorrent.ListenerWorker do
   require Logger
 
   defmodule State do
-    defstruct [:listen_socket, port: Application.compile_env(:etorrent, :listen_port, 7777)]
+    defstruct [:listen_socket, port: Application.compile_env(:etorrent, :listen_port, 9000)]
   end
 
   def start_link(args) do

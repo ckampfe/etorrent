@@ -6,7 +6,7 @@ defmodule Etorrent.TorrentFile do
 
   # TODO: this is set up for single-file mode only
 
-  alias Etorrent.Bencode
+  alias Etorrent.{Bencode, DataFile}
 
   def new(torrent_file) when is_binary(torrent_file) do
     {:ok, decoded_torrent_file} = Bencode.decode(torrent_file, atom_keys: true)
@@ -156,6 +156,20 @@ defmodule Etorrent.TorrentFile do
       piece_hashes
 
     {:ok, %{position: position, length: real_piece_length, hash: hash}}
+  end
+
+  def left(info_hash, pieces) do
+    {:ok, length} = __MODULE__.length(info_hash)
+
+    ones = DataFile.one_indexes(pieces)
+
+    have_length =
+      Enum.reduce(ones, 0, fn i, acc ->
+        {:ok, %{length: piece_length}} = piece_position_length_and_hash(info_hash, i)
+        acc + piece_length
+      end)
+
+    {:ok, length - have_length}
   end
 
   def nominal_piece_length(info_hash) do

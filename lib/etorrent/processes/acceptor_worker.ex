@@ -36,14 +36,20 @@ defmodule Etorrent.AcceptorWorker do
   def handle_info(:accept, %State{listen_socket: listen_socket} = state) do
     {:ok, socket} = :gen_tcp.accept(listen_socket)
 
+    Logger.debug("got acceptor socket")
+
     case :gen_tcp.recv(socket, 1 + 19 + 8 + 20 + 20, :timer.seconds(5)) do
       {:ok, bytes} ->
         {:ok, %PeerProtocol.Handshake{info_hash: info_hash, peer_id: peer_id}} =
           PeerProtocol.decode_handshake(bytes)
 
+        Logger.debug("acceptor got valid handshake")
+
         {:ok, {address, port}} = :inet.peername(socket)
 
         add_incoming_peer_to_torrent(info_hash, peer_id, socket, address, port)
+
+        Logger.debug("acceptor worker added peer, reentering accept loop")
 
         send(self(), :accept)
 
@@ -64,8 +70,11 @@ defmodule Etorrent.AcceptorWorker do
 
     # 2. tell torrentworker about the peer, have it monitor the peer?
     :ok = TorrentWorker.register_new_peer(info_hash, peer_pid, peer_id, address, port)
+
     # 3. transfer the socket to the peer process
     :ok = :gen_tcp.controlling_process(socket, peer_pid)
+
+    :ok = TorrentWorker.complete_handshake_with_incoming_peer(info_hash, peer_pid)
 
     {:ok, info_hash}
   end
